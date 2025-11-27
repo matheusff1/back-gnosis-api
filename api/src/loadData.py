@@ -98,7 +98,7 @@ TODAY = pd.Timestamp.now().normalize()
 class DataCollector:
     def __init__(self, symbols_yf=SYMBOLS_YF_ATT, symbols_td=SYMBOLS_TD, symbols_fred=SYMBOLS_FRED, url=URL, api_key=API_KEY, fred_key=FRED_KEY,
                  bacen_ids=BACEN_IDS,
-                 today_date=TODAY, interval_yf=INTERVAL_YF, period_yf=PERIOD_YF,
+                 today_date=None, interval_yf=INTERVAL_YF, period_yf=PERIOD_YF,
                  interval_td=INTERVAL_TD, period_td=PERIOD_TD):
         self.symbols_yf = symbols_yf
         self.symbols_td = symbols_td
@@ -110,7 +110,7 @@ class DataCollector:
         self.period_td = period_td
         self.bacen_ids = bacen_ids
         self.url = url
-        self.today_date = today_date
+        self.today_date = today_date if today_date is not None else pd.Timestamp.now().normalize()
         self.fred = Fred(api_key=fred_key)
 
     def collect_yfinance_data(self):
@@ -347,7 +347,9 @@ class DataCollector:
             print("Nenhum registro para salvar Bacen.")
 
     def update_yfinance_data(self):
-        today = pd.Timestamp(self.today_date)  
+        today = pd.Timestamp(self.today_date)
+        print(f"Data de atualização: {today}")
+        
         for symbol in self.symbols_yf:
             print(f'Atualizando dados de {symbol} via yFinance...')
 
@@ -455,7 +457,9 @@ class DataCollector:
             print("Nenhum registro para salvar.")
 
     def update_twelvedata_data(self):
-        today = self.today_date
+        today = pd.Timestamp(self.today_date)
+        print(f"Data de atualização TwelveData: {today}")
+        
         for symbol in self.symbols_td:
             print(f'Atualizando dados de {symbol} via TwelveData...')
 
@@ -515,6 +519,9 @@ class DataCollector:
                 print(f"Erro ao atualizar {symbol}: {e}")
 
     def update_bacen_data(self):
+        today = pd.Timestamp(self.today_date)
+        print(f"Data de atualização BACEN: {today}")
+        
         series_map = {
             "Swap_DI_5Y": 1178,
             "Selic_Over": 4391,
@@ -534,7 +541,7 @@ class DataCollector:
             url = (
                 f"https://api.bcb.gov.br/dados/serie/bcdata.sgs.{serie}/dados?"
                 f"formato=csv&dataInicial={start_date.strftime('%d/%m/%Y')}"
-                f"&dataFinal={self.today_date.strftime('%d/%m/%Y')}"
+                f"&dataFinal={today.strftime('%d/%m/%Y')}"
             )
 
             headers = {'User-Agent': 'Mozilla/5.0'}
