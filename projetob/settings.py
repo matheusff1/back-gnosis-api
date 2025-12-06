@@ -146,7 +146,7 @@ STATIC_URL = 'static/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-TWELVE_DATA_API_KEY = 'sua_chave_twelvedata_aqui'  
+TWELVE_DATA_API_KEY = ''  
 
 
 SIMPLE_JWT = {

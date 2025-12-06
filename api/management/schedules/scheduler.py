@@ -55,7 +55,7 @@ def start():
 
     scheduler.add_job(
         run_update_portfolios_data,
-        trigger=CronTrigger(hour=22, minute=15),
+        trigger=CronTrigger(hour=22, minute=5),
         misfire_grace_time=120
     )
 
