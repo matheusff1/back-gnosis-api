@@ -73,6 +73,8 @@ MIDDLEWARE = [
 ROOT_URLCONF = 'projetob.urls'
 CORS_ALLOW_ALL_ORIGINS = True
 
+CORS_ALLOW_HEADERS = ['*']
+
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',

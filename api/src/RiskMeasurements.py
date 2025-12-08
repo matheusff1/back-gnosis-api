@@ -336,7 +336,7 @@ class PortfolioRisk:
 
 
     
-def process_markowitz_data(df, behaviour='conservative',min_return=0.0005):
+def process_markowitz_data(df, behaviour='conservative',min_return=0.0007):
     df = df.copy()
     total_symbol = df['symbol'].nunique()
     symbols_per_date = df.groupby('date')['symbol'].nunique()

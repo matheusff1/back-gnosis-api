@@ -125,15 +125,22 @@ def get_user_portfolios(request):
 
     data = []
     for p in portfolios:
+        portfolio_tracking_data = PortfolioTracking.objects.filter(portfolio=p).order_by('date')
+        portfolio_initial_balance = portfolio_tracking_data.first().balance if portfolio_tracking_data.exists() else None
+        portfolio_current_balance = portfolio_tracking_data.last().balance if portfolio_tracking_data.exists() else None
+
+        portfolio_initial_distribution = portfolio_tracking_data.first().distribution if portfolio_tracking_data.exists() else None
+        portfolio_current_distribution = portfolio_tracking_data.last().distribution if portfolio_tracking_data.exists() else None
+
         data.append({
             "id": p.id,
             "name": p.name,
             "description": p.description,
-            "initial_balance": float(p.initial_balance),
-            "current_balance": float(p.current_balance),
+            "initial_balance": float(portfolio_initial_balance),
+            "current_balance": float(portfolio_current_balance),
             "assets": p.assets,
-            "initial_distribution": p.initial_distribution,
-            "current_distribution": p.current_distribution,
+            "initial_distribution": portfolio_initial_distribution,
+            "current_distribution": portfolio_current_distribution,
             "creation_date": p.created_at.date()
         })
 
@@ -708,6 +715,10 @@ def get_asset_risk_data(request, symb):
                 return JsonResponse({'error': 'Invalid or unsupported symbol.'}, status=400)
 
             market_data = MarketData.objects.filter(symbol=symbol).order_by('date')
+
+            three_years_ago = pd.Timestamp.now() - pd.DateOffset(years=3)
+            market_data = market_data.filter(date__gte=three_years_ago)
+            
             if not market_data.exists():
                 return JsonResponse({'error': 'No market data found for the given symbol.'}, status=404)
 
@@ -741,11 +752,15 @@ def get_optimized_portfolio(request):
                 portfolio=portfolio_id
             ).order_by('-date').first()
 
+            ret = {}
+
             symbols = portfolio_last_data.distribution.keys()
             symbols = list(symbols)
             symbols_data = MarketData.objects.filter(symbol__in=symbols).order_by('date')
 
             symbols_data = pd.DataFrame(list(symbols_data.values('symbol', 'date', 'close', 'high', 'low', 'open', 'volume')))
+
+            
 
             data_mk = process_markowitz_data(symbols_data, behaviour='balanced', min_return=min_return)
 
@@ -755,15 +770,30 @@ def get_optimized_portfolio(request):
 
             data_gn = process_gnosse_data(symbols_data, predictions_data, behaviour='aggressive')
 
-            optimization_mk = PortfolioOptimizer(items=data_mk['items'],items_val=data_mk['items_val'], items_returns= data_mk['items_returns'], items_pred= data_mk['items_pred'],
-                                                    items_vol= data_mk['items_vol'], min_return=data_mk['min_return'], optimizer= data_mk['optimizer'])
-            results_mk = optimization_mk.optimize()
+            try:
 
-            optimization_gn = PortfolioOptimizer(items=data_gn['items'],items_val=data_gn['items_val'], items_returns= data_gn['items_returns'], items_pred= data_gn['items_pred'],
-                                                    items_vol= data_gn['items_vol'], min_return=data_gn['min_return'], optimizer= data_gn['optimizer'])
-            results_gn = optimization_gn.optimize()
 
-            results = {"markowitz": results_mk, "gnosse": results_gn}
+                optimization_mk = PortfolioOptimizer(items=data_mk['items'],items_val=data_mk['items_val'], items_returns= data_mk['items_returns'], items_pred= data_mk['items_pred'],
+                                                        items_vol= data_mk['items_vol'], min_return=data_mk['min_return'], optimizer= data_mk['optimizer'])
+                results_mk = optimization_mk.optimize()
+
+                ret['markowitz'] = results_mk
+            except Exception as e:
+                traceback.print_exc()
+                ret['markowitz'] = {'error': str(e)}
+
+            try:
+                optimization_gn = PortfolioOptimizer(items=data_gn['items'],items_val=data_gn['items_val'], items_returns= data_gn['items_returns'], items_pred= data_gn['items_pred'],
+                                                        items_vol= data_gn['items_vol'], min_return=data_gn['min_return'], optimizer= data_gn['optimizer'])
+                results_gn = optimization_gn.optimize()
+
+                ret['gnosse'] = results_gn
+
+            except Exception as e:
+                traceback.print_exc()
+                ret['gnosse'] = {'error': str(e)}
+
+            results = {"markowitz": ret['markowitz'], "gnosse": ret['gnosse']}
 
             return JsonResponse({'results': results}, status=200)
 
@@ -855,6 +885,136 @@ def get_assets_last_data(request):
         
     return JsonResponse({'error': 'Invalid request method.'}, status=405)
 
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_all_predictions_with_analysis(request):
+    if request.method == 'GET':
+        try:
+            predictions = Prediction.objects.all().order_by('symbol', '-date')
+            predictions_df = pd.DataFrame(list(predictions.values('symbol', 'date', 'prediction', 'results')))
+            
+            predictions_df = predictions_df[predictions_df['symbol'].isin(ALLOWED_SYMBOLS)]
+            
+            if predictions_df.empty:
+                return JsonResponse({'error': 'No predictions found.'}, status=404)
+
+            predictions_df = predictions_df.drop_duplicates(subset=['symbol'], keep='first')
+            predictions_df['date'] = predictions_df['date'].astype(str)
+
+            predictions_data = json.loads(predictions_df.to_json(orient='records'))
+
+            symbols_current_data = {}
+            for item in predictions_data:
+                symbol = item['symbol']
+                asset_data = MarketData.objects.filter(symbol=symbol).order_by('-date').first()
+                if asset_data:
+                    symbols_current_data[symbol] = {
+                        'date': str(asset_data.date),
+                        'close': float(asset_data.close),
+                        'open': float(asset_data.open),
+                        'high': float(asset_data.high),
+                        'low': float(asset_data.low),
+                        'volume': int(asset_data.volume)
+                    }
+
+            predicted_returns = {}
+            for item in predictions_data:
+                symbol = item['symbol']
+                prediction = item['prediction']
+                current_close = symbols_current_data.get(symbol, {}).get('close')
+                
+                if current_close and current_close > 0:
+                    predicted_return = (prediction - current_close) / current_close
+                    predicted_returns[symbol] = predicted_return
+                else:
+                    predicted_returns[symbol] = None
+
+            processed_predictions_data = []
+            for item in predictions_data:
+                symbol = item['symbol']
+                
+                results = item.get('results', {})
+                metrics = results.get('metrics', {})
+                
+                processed_item = {
+                    'symbol': symbol,
+                    'date': item['date'],
+                    'prediction': round(item['prediction'], 2),
+                    'current_price': symbols_current_data.get(symbol, {}).get('close'),
+                    'predicted_return': round(predicted_returns.get(symbol, 0) * 100, 2) if predicted_returns.get(symbol) else None,
+                    
+                    'features': results.get('selected_features', []),
+                    
+                    'metrics': {
+                        'mae': round(metrics.get('mae', 0), 4),
+                        'mse': round(metrics.get('loss', 0), 4),  
+                    }
+                }
+                
+                processed_predictions_data.append(processed_item)
+
+            valid_returns = [ret for ret in predicted_returns.values() if ret is not None]
+            
+            if valid_returns:
+                mean_predicted_return = np.mean(valid_returns)
+                std_predicted_return = np.std(valid_returns)
+                median_predicted_return = np.median(valid_returns)
+                
+                highest_return_symbol = max(predicted_returns, key=lambda k: predicted_returns[k] if predicted_returns[k] is not None else float('-inf'))
+                lowest_return_symbol = min(predicted_returns, key=lambda k: predicted_returns[k] if predicted_returns[k] is not None else float('inf'))
+                
+                positive_predictions = sum(1 for ret in valid_returns if ret > 0)
+                negative_predictions = sum(1 for ret in valid_returns if ret <= 0)
+            else:
+                mean_predicted_return = 0
+                std_predicted_return = 0
+                median_predicted_return = 0
+                highest_return_symbol = None
+                lowest_return_symbol = None
+                positive_predictions = 0
+                negative_predictions = 0
+
+            sorted_returns = sorted(predicted_returns.items(), key=lambda x: x[1] if x[1] is not None else float('-inf'), reverse=True)
+            top_5_best = [{'symbol': symbol, 'predicted_return': round(ret * 100, 2)} for symbol, ret in sorted_returns[:5] if ret is not None]
+            top_5_worst = [{'symbol': symbol, 'predicted_return': round(ret * 100, 2)} for symbol, ret in sorted_returns[-5:] if ret is not None]
+
+            maes = [item['metrics']['mae'] for item in processed_predictions_data if item['metrics']['mae'] > 0]
+            avg_mae = np.mean(maes) if maes else None
+            
+            mses = [item['metrics']['mse'] for item in processed_predictions_data if item['metrics']['mse'] > 0]
+            avg_mse = np.mean(mses) if mses else None
+
+            response = {
+                'predictions': processed_predictions_data,
+                'summary': {
+                    'total_assets': len(processed_predictions_data),
+                    'mean_predicted_return': round(mean_predicted_return * 100, 2),
+                    'median_predicted_return': round(median_predicted_return * 100, 2),
+                    'std_predicted_return': round(std_predicted_return * 100, 2),
+                    'highest_return': {
+                        'symbol': highest_return_symbol,
+                        'return': round(predicted_returns.get(highest_return_symbol, 0) * 100, 2) if highest_return_symbol else None
+                    },
+                    'lowest_return': {
+                        'symbol': lowest_return_symbol,
+                        'return': round(predicted_returns.get(lowest_return_symbol, 0) * 100, 2) if lowest_return_symbol else None
+                    },
+                    'positive_predictions': positive_predictions,
+                    'negative_predictions': negative_predictions,
+                    'avg_model_mae': round(avg_mae, 4) if avg_mae else None,
+                    'avg_model_mse': round(avg_mse, 4) if avg_mse else None
+                },
+                'top_5_best': top_5_best,
+                'top_5_worst': top_5_worst,
+            }
+
+            return JsonResponse(response, status=200)
+
+        except Exception as e:
+            traceback.print_exc()
+            return JsonResponse({'error': str(e)}, status=500)
+        
+    return JsonResponse({'error': 'Invalid request method.'}, status=405)
 
 
 
