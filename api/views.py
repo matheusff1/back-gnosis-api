@@ -815,7 +815,7 @@ def get_starter_portfolio(request):
             data['date'] = pd.to_datetime(data['date'], errors='coerce')
             data = data[data['date'] >= pd.Timestamp.now() - pd.DateOffset(years=4)]
 
-            processed_data = process_markowitz_data(data, behaviour='neutral', min_return=0.0005)
+            processed_data = process_markowitz_data(data, behaviour='neutral', min_return=0.0006)
 
             optimizer = PortfolioOptimizer(items=processed_data['items'], items_val=processed_data['items_val'],
                                            items_returns=processed_data['items_returns'], items_pred=processed_data['items_pred'],
@@ -832,6 +832,151 @@ def get_starter_portfolio(request):
         
     return JsonResponse({'error': 'Invalid request method.'}, status=405)
 
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_portfolio_returns_distribution(request):
+    user = request.user
+    portfolio_id = request.GET.get('id')
+
+    try:
+        portfolio = Portfolio.objects.filter(user=user, id=portfolio_id).first()
+        if not portfolio:
+            return Response({'error': 'Portfolio not found.'}, status=404)
+
+        tracking_records = PortfolioTracking.objects.filter(
+            portfolio=portfolio
+        ).order_by('date')
+
+        if not tracking_records.exists():
+            return Response({'error': 'No tracking data found for this portfolio.'}, status=404)
+
+        portfolio_assets_distribution = tracking_records.last().distribution or {}
+        assets = list(portfolio_assets_distribution.keys())
+
+        three_years_ago = pd.Timestamp.now() - pd.DateOffset(years=5)
+        assets_data = MarketData.objects.filter(
+            symbol__in=assets,
+            date__gte=three_years_ago
+        ).order_by('date')
+
+        if not assets_data.exists():
+            return Response({'error': 'No market data found for the assets in this portfolio.'}, status=404)
+
+        assets_df = pd.DataFrame(list(
+            assets_data.values('symbol', 'date', 'close')
+        ))
+
+        assets_df['date'] = pd.to_datetime(assets_df['date'])
+
+        dfs = []
+        for symbol in assets:
+            asset_df = assets_df[assets_df['symbol'] == symbol].sort_values('date')
+            asset_df['close'] = pd.to_numeric(asset_df['close'], errors='coerce')
+            asset_df = asset_df.dropna(subset=['close'])
+            asset_df['return'] = np.log(asset_df['close'] / asset_df['close'].shift(1))
+            dfs.append(
+                asset_df[['date', 'return']].rename(columns={'return': symbol})
+            )
+
+        returns_df = dfs[0]
+        for df in dfs[1:]:
+            returns_df = returns_df.merge(df, on='date', how='inner')
+
+        returns_df = returns_df.dropna()
+
+        returns_df = returns_df.set_index('date')
+
+        order = list(portfolio_assets_distribution.keys())
+        returns_df = returns_df[order]
+
+        weights = pd.Series(portfolio_assets_distribution)[order]
+
+        portfolio_returns = returns_df.dot(weights)
+
+        return Response({
+            'returns_columns': returns_df.columns.tolist(),
+            'returns': returns_df.values.tolist(),
+            'portfolio_returns': portfolio_returns.values.tolist()
+        }, status=200)
+
+    except Exception as e:
+        traceback.print_exc()
+        return Response({'error': str(e)}, status=500)
+    
+
+###Checakar e verificar a lógica
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_portfolio_accumulated_returns(request):
+    user = request.user
+    portfolio_id = request.GET.get('id')
+
+    try:
+        portfolio = Portfolio.objects.filter(user=user, id=portfolio_id).first()
+        if not portfolio:
+            return Response({'error': 'Portfolio not found.'}, status=404)
+
+        tracking_records = PortfolioTracking.objects.filter(
+            portfolio=portfolio
+        ).order_by('date')
+
+        if not tracking_records.exists():
+            return Response({'error': 'No tracking data found for this portfolio.'}, status=404)
+
+        portfolio_assets_distribution = tracking_records.last().distribution or {}
+        assets = list(portfolio_assets_distribution.keys())
+
+        five_years_ago = pd.Timestamp.now() - pd.DateOffset(years=5)
+        assets_data = MarketData.objects.filter(
+            symbol__in=assets,
+            date__gte=five_years_ago
+        ).order_by('date')
+
+        if not assets_data.exists():
+            return Response({'error': 'No market data found for assets.'}, status=404)
+
+        assets_df = pd.DataFrame(list(
+            assets_data.values('symbol', 'date', 'close')
+        ))
+
+        assets_df['date'] = pd.to_datetime(assets_df['date'])
+
+        dfs = []
+        for symbol in assets:
+            asset_df = assets_df[assets_df['symbol'] == symbol].sort_values('date')
+            asset_df['close'] = pd.to_numeric(asset_df['close'], errors='coerce')
+            asset_df = asset_df.dropna(subset=['close'])
+            asset_df['log_return'] = np.log(asset_df['close'] / asset_df['close'].shift(1))
+            dfs.append(
+                asset_df[['date', 'log_return']].rename(columns={'log_return': symbol})
+            )
+
+        returns_df = dfs[0]
+        for df in dfs[1:]:
+            returns_df = returns_df.merge(df, on='date', how='inner')
+
+        returns_df = returns_df.dropna().set_index('date')
+
+        order = list(portfolio_assets_distribution.keys())
+        returns_df = returns_df[order]
+
+        weights = pd.Series(portfolio_assets_distribution)[order]
+
+        assets_cum = np.exp(returns_df.cumsum()) - 1
+
+        portfolio_log_returns = returns_df.dot(weights)
+        portfolio_cum = np.exp(portfolio_log_returns.cumsum()) - 1
+
+        return Response({
+            'accumulated_returns_columns': assets_cum.columns.tolist(),
+            'accumulated_returns': assets_cum.values.tolist(),
+            'accumulated_portfolio_returns': portfolio_cum.values.tolist()
+        }, status=200)
+
+    except Exception as e:
+        traceback.print_exc()
+        return Response({'error': str(e)}, status=500)
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -920,11 +1065,18 @@ def get_all_predictions_with_analysis(request):
             predicted_returns = {}
             for item in predictions_data:
                 symbol = item['symbol']
-                prediction = item['prediction']
+                prediction_list = item['prediction']  
+                
+                if not isinstance(prediction_list, list) or len(prediction_list) == 0:
+                    predicted_returns[symbol] = None
+                    continue
+                
+                prediction_day5 = prediction_list[-1]
+                
                 current_close = symbols_current_data.get(symbol, {}).get('close')
                 
                 if current_close and current_close > 0:
-                    predicted_return = (prediction - current_close) / current_close
+                    predicted_return = (prediction_day5 - current_close) / current_close
                     predicted_returns[symbol] = predicted_return
                 else:
                     predicted_returns[symbol] = None
@@ -932,14 +1084,26 @@ def get_all_predictions_with_analysis(request):
             processed_predictions_data = []
             for item in predictions_data:
                 symbol = item['symbol']
+                prediction_list = item['prediction']
                 
                 results = item.get('results', {})
                 metrics = results.get('metrics', {})
                 
+                if isinstance(prediction_list, list) and len(prediction_list) > 0:
+                    prediction_day1 = round(prediction_list[0], 2)
+                    prediction_day5 = round(prediction_list[-1], 2)
+                    prediction_full = [round(p, 2) for p in prediction_list]
+                else:
+                    prediction_day1 = None
+                    prediction_day5 = None
+                    prediction_full = []
+                
                 processed_item = {
                     'symbol': symbol,
                     'date': item['date'],
-                    'prediction': round(item['prediction'], 2),
+                    'prediction_day1': prediction_day1,  
+                    'prediction_day5': prediction_day5,  
+                    'prediction_full': prediction_full,  
                     'current_price': symbols_current_data.get(symbol, {}).get('close'),
                     'predicted_return': round(predicted_returns.get(symbol, 0) * 100, 2) if predicted_returns.get(symbol) else None,
                     
@@ -947,7 +1111,7 @@ def get_all_predictions_with_analysis(request):
                     
                     'metrics': {
                         'mae': round(metrics.get('mae', 0), 4),
-                        'mse': round(metrics.get('loss', 0), 4),  
+                        'loss': round(metrics.get('loss', 0), 4),
                     }
                 }
                 
@@ -981,14 +1145,14 @@ def get_all_predictions_with_analysis(request):
             maes = [item['metrics']['mae'] for item in processed_predictions_data if item['metrics']['mae'] > 0]
             avg_mae = np.mean(maes) if maes else None
             
-            mses = [item['metrics']['mse'] for item in processed_predictions_data if item['metrics']['mse'] > 0]
-            avg_mse = np.mean(mses) if mses else None
+            losss = [item['metrics']['loss'] for item in processed_predictions_data if item['metrics']['loss'] > 0]
+            avg_loss = np.mean(losss) if losss else None
 
             response = {
                 'predictions': processed_predictions_data,
                 'summary': {
                     'total_assets': len(processed_predictions_data),
-                    'mean_predicted_return': round(mean_predicted_return * 100, 2),
+                    'mean_predicted_return': round(mean_predicted_return * 100, 2), 
                     'median_predicted_return': round(median_predicted_return * 100, 2),
                     'std_predicted_return': round(std_predicted_return * 100, 2),
                     'highest_return': {
@@ -1002,10 +1166,11 @@ def get_all_predictions_with_analysis(request):
                     'positive_predictions': positive_predictions,
                     'negative_predictions': negative_predictions,
                     'avg_model_mae': round(avg_mae, 4) if avg_mae else None,
-                    'avg_model_mse': round(avg_mse, 4) if avg_mse else None
+                    'avg_model_loss': round(avg_loss, 4) if avg_loss else None
                 },
                 'top_5_best': top_5_best,
                 'top_5_worst': top_5_worst,
+                'generated_at': pd.Timestamp.now().isoformat()
             }
 
             return JsonResponse(response, status=200)

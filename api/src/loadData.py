@@ -348,6 +348,7 @@ class DataCollector:
 
     def update_yfinance_data(self):
         today = pd.Timestamp(self.today_date)
+        # end_date = today + pd.Timedelta(days=1)
         print(f"Data de atualização: {today}")
         
         for symbol in self.symbols_yf:
