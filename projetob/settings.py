@@ -17,11 +17,14 @@ from datetime import timedelta
 
 
 
+
+
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
 load_dotenv(os.path.join(BASE_DIR, '.env'))
+
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
@@ -148,7 +151,9 @@ STATIC_URL = 'static/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-TWELVE_DATA_API_KEY = ''  
+TWELVE_DATA_API_KEY = os.getenv('TWELVE_DATA_API_KEY')
+FRED_API_KEY = os.getenv('FRED_API_KEY')
+TOKEN_ALGORITHM = os.getenv('TOKEN_ALGORITHM')
 
 
 SIMPLE_JWT = {
@@ -157,7 +162,7 @@ SIMPLE_JWT = {
     "ROTATE_REFRESH_TOKENS": False,           
     "BLACKLIST_AFTER_ROTATION": True,                 
 
-    "ALGORITHM": "HS256",
+    "ALGORITHM": TOKEN_ALGORITHM,
     "SIGNING_KEY": SECRET_KEY,
     "AUTH_HEADER_TYPES": ("Bearer",),               
 

@@ -803,6 +803,8 @@ def get_optimized_portfolio(request):
         
     return JsonResponse({'error': 'Invalid request method.'}, status=405)
 
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_starter_portfolio(request):
@@ -833,6 +835,9 @@ def get_starter_portfolio(request):
     return JsonResponse({'error': 'Invalid request method.'}, status=405)
 
 
+
+###Checakar e verificar a lógica
+##Tirar as regras da view e colocar em um local apropriado
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_portfolio_returns_distribution(request):
@@ -905,7 +910,9 @@ def get_portfolio_returns_distribution(request):
         return Response({'error': str(e)}, status=500)
     
 
+
 ###Checakar e verificar a lógica
+##Tirar as regras da view e colocar em um local apropriado
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_portfolio_accumulated_returns(request):
@@ -978,6 +985,8 @@ def get_portfolio_accumulated_returns(request):
         traceback.print_exc()
         return Response({'error': str(e)}, status=500)
 
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_asset_chatbot_analysis(request, symb):
@@ -1030,6 +1039,9 @@ def get_assets_last_data(request):
         
     return JsonResponse({'error': 'Invalid request method.'}, status=405)
 
+
+###Checakar e verificar a lógica
+##Tirar as regras da view e colocar em um local apropriado
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_all_predictions_with_analysis(request):

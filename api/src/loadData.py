@@ -6,7 +6,7 @@ from decimal import Decimal
 import os
 import django
 from django.conf import settings
-from projetob.settings import TWELVE_DATA_API_KEY 
+from projetob.settings import TWELVE_DATA_API_KEY, FRED_API_KEY 
 from fredapi import Fred
 import io
 from datetime import datetime, timedelta
@@ -17,7 +17,7 @@ django.setup()
 from api.models import MarketData  
 
 API_KEY = TWELVE_DATA_API_KEY  
-FRED_KEY = '33585380c3c80ecd1fac65d1ad38a6a6'
+FRED_KEY = FRED_API_KEY
 
 
 SYMBOLS_TD = ['PETR4', 'BRL/USD', 'BTC/USD', 'AAPL', 'XAU/USD', 'BVSP', 'GSPC', 'IXIC']
@@ -110,8 +110,9 @@ class DataCollector:
         self.period_td = period_td
         self.bacen_ids = bacen_ids
         self.url = url
-        self.today_date = today_date if today_date is not None else pd.Timestamp.now().normalize()
+        self.today_date = today_date or pd.Timestamp.now().date()
         self.fred = Fred(api_key=fred_key)
+
 
     def collect_yfinance_data(self):
         for symbol in self.symbols_yf:
@@ -154,70 +155,6 @@ class DataCollector:
                     print(f"Dados vazios para {symbol}.")
             except Exception as e:
                 print(f"Erro ao coletar {symbol}: {e}")
-
-    def collect_cds_data(self):
-        #REVER FUNÇÃO, NÃO ESTÁ COLETANDO O TOTAL DOS DADOS
-        try:
-            cds_br_df = pd.read_csv(
-            r'C:\Users\Usuario\Documents\Coisas\projeto-b-backup\server\api\src\data-base\cds_brasil_5y.csv'
-            )
-            cds_usa_df = pd.read_csv(
-                r'C:\Users\Usuario\Documents\Coisas\projeto-b-backup\server\api\src\data-base\cds_usa_5y.csv'
-            )
-
-            cds_br_df = cds_br_df.rename(columns={
-                'Date': 'Date',
-                'Price': 'Close',
-                'Open': 'Open',
-                'High': 'High',
-                'Low': 'Low',
-                'Change %': 'Var%'
-            })
-            cds_br_df['Symbol'] = 'CDS_Brasil_5Y'
-
-            cds_usa_df = cds_usa_df.rename(columns={
-                'Date': 'Date',
-                'Price': 'Close',
-                'Open': 'Open',
-                'High': 'High',
-                'Low': 'Low',
-                'Change %': 'Var%'
-            })
-            cds_usa_df['Symbol'] = 'CDS_USA_5Y'
-
-
-            cds_br_df['Date'] = pd.to_datetime(cds_br_df['Date'], format="%m/%d/%Y")
-
-            cds_usa_df['Date'] = pd.to_datetime(cds_usa_df['Date'], format="%m/%d/%Y")
-
-
-            cds_br_df = cds_br_df[['Date', 'Open', 'High', 'Low', 'Close', 'Symbol']]
-            cds_usa_df = cds_usa_df[['Date', 'Open', 'High', 'Low', 'Close', 'Symbol']]
-
-            cds_df = pd.concat([cds_br_df, cds_usa_df], ignore_index=True)
-
-            if not cds_df.empty:
-                cds_df['Date'] = pd.to_datetime(cds_df['Date'], dayfirst=True)
-                
-                registros = []
-                for _, row in cds_df.iterrows():
-                    try:
-                        registros.append(MarketData(
-                            date=row['Date'].date(),
-                            open=Decimal(str(row['Open'])),
-                            high=Decimal(str(row['High'])),
-                            low=Decimal(str(row['Low'])),
-                            close=Decimal(str(row['Close'])),
-                            volume=0,  
-                            symbol=row['Symbol']
-                        ))
-                    except Exception as e:
-                        print(f"Erro ao preparar registro de {row['Symbol']} em {row['Date']}: {e}")
-                if registros:
-                    MarketData.objects.bulk_create(registros)
-                    print(f"{len(registros)} registros de CDS salvos no banco.")
-        except Exception as e:
-            print(f"Erro ao coletar dados de CDS: {e}")
 
     def collect_twelvedata_data(self):
         for symbol in self.symbols_td:
@@ -551,7 +488,6 @@ class DataCollector:
                 response = requests.get(url, headers=headers)
                 response.raise_for_status()
 
-                import io
                 data = pd.read_csv(
                     io.StringIO(response.text),
                     sep=';',
@@ -635,76 +571,3 @@ class DataCollector:
             except Exception as e:
                 print(f"Erro ao atualizar {symbol}: {e}")
 
-    def update_cds_data(self):
-        try:
-            cds_br_df = self.get_last_cds('BR')
-            cds_usa_df = self.get_last_cds('US')
-
-            cds_df = pd.concat([cds_br_df, cds_usa_df], ignore_index=True)
-
-            start_date = MarketData.objects.filter(symbol='CDS_Brasil_5Y').order_by('-date').first()
-            if start_date:
-                start_date = pd.Timestamp(start_date.date) + pd.Timedelta(days=1)
-            else:
-                print("Nenhum dado anterior encontrado para CDS.")
-                return
-            
-            cds_df = cds_df[cds_df['Date'] >= start_date]
-
-            if not cds_df.empty:
-                cds_df['Date'] = pd.to_datetime(cds_df['Date'], dayfirst=True)
-                
-                registros = []
-                for _, row in cds_df.iterrows():
-                    try:
-                        registros.append(MarketData(
-                            date=row['Date'].date(),
-                            open=row['Open'],
-                            high=row['High'],
-                            low=row['Low'],
-                            close=row['Close'],
-                            volume=0,  
-                            symbol=row['Symbol']
-                        ))
-                    except Exception as e:
-                        print(f"Erro ao preparar registro de {row['Symbol']} em {row['Date']}: {e}")
-                if registros:
-                    MarketData.objects.bulk_create(registros, ignore_conflicts=True)
-                    print(f"{len(registros)} registros de CDS atualizados no banco.")
-        except Exception as e:
-            print(f"Erro ao atualizar dados de CDS: {e}")
-
-    def get_last_cds(self,country):
-        try:
-            if(country == 'BR'):
-                url_final = 'brazil-cds-5-years-usd-historical-data'
-                symbol = 'CDS_Brasil_5Y'
-            elif(country == 'US'):
-                url_final = 'united-states-cds-5-years-usd-historical-data'
-                symbol = 'CDS_USA_5Y'
-
-            url = f'https://www.investing.com/rates-bonds/{url_final}'
-
-            headers = {"User-Agent": "Mozilla/5.0"}
-    
-            resp = requests.get(url, headers=headers)
-            dfs = pd.read_html(resp.text)
-            df = dfs[0]
-            
-            df.columns = ["Data", "Último", "Abertura", "Máxima", "Mínima", "Variação %"]
-
-            df = df.rename(columns={
-                "Data": "Date",
-                "Último": "Close",
-                "Abertura": "Open",
-                "Máxima": "High",
-                "Mínima": "Low"
-            })
-
-            df["Symbol"] = symbol
-            df = df.drop(columns=["Variação %"], errors='ignore')
-
-            df["Date"] = pd.to_datetime(df["Date"], dayfirst=True)
-        except Exception as e:
-            print(f"Erro ao buscar último registro de CDS para {country}: {e}")
-            return None

@@ -240,6 +240,7 @@ class PortfolioOptimizer:
             'optimizer': self.optimizer,
         }
     
+
 class PortfolioRisk:
     def __init__(self, symbols, distribution, price_dict, df):
         self.symbols = symbols
@@ -335,68 +336,70 @@ class PortfolioRisk:
         }
 
 
-    
-def process_markowitz_data(df, behaviour='conservative',min_return=0.0007):
-    df = df.copy()
-    total_symbol = df['symbol'].nunique()
-    symbols_per_date = df.groupby('date')['symbol'].nunique()
+class OptmizersDataProcessor:
+    @staticmethod
+    def process_markowitz_data(df, behaviour='conservative',min_return=0.0007):
+        df = df.copy()
+        total_symbol = df['symbol'].nunique()
+        symbols_per_date = df.groupby('date')['symbol'].nunique()
 
-    common_dates = symbols_per_date[symbols_per_date == total_symbol].index
+        common_dates = symbols_per_date[symbols_per_date == total_symbol].index
 
-    df_common_dates = df[df['date'].isin(common_dates)]
+        df_common_dates = df[df['date'].isin(common_dates)]
 
-    df_common_dates['close'] = df_common_dates['close'].astype(float)
+        df_common_dates['close'] = df_common_dates['close'].astype(float)
 
-    pivot = df_common_dates.pivot(index='date', columns='symbol', values='close')
+        pivot = df_common_dates.pivot(index='date', columns='symbol', values='close')
 
-    last_values = pivot.loc[pivot.index.max()]
+        last_values = pivot.loc[pivot.index.max()]
 
-    returns = np.log(pivot / pivot.shift(1)).dropna()
+        returns = np.log(pivot / pivot.shift(1)).dropna()
 
-    symbols = returns.columns.tolist()
+        symbols = returns.columns.tolist()
 
-    return {
-        "items": symbols,
-        "items_val": last_values[symbols].values,
-        "items_returns": returns,
-        "items_pred": np.zeros(len(symbols)),  
-        "items_vol": np.zeros(len(symbols)),
-        "behaviour": behaviour,
-        "optimizer": 'markowitz',
-        "min_return": min_return
-    }
+        return {
+            "items": symbols,
+            "items_val": last_values[symbols].values,
+            "items_returns": returns,
+            "items_pred": np.zeros(len(symbols)),  
+            "items_vol": np.zeros(len(symbols)),
+            "behaviour": behaviour,
+            "optimizer": 'markowitz',
+            "min_return": min_return
+        }
 
-def process_gnosse_data(df, predictions,optimizer='gnosse', behaviour='conservative'):
-    df = df.copy()
-    df['close'] = pd.to_numeric(df['close'], errors='coerce')
-    predictions = predictions.copy()
+    @staticmethod
+    def process_gnosse_data(df, predictions,optimizer='gnosse', behaviour='conservative'):
+        df = df.copy()
+        df['close'] = pd.to_numeric(df['close'], errors='coerce')
+        predictions = predictions.copy()
 
-    vols = []
-    last_values = []
+        vols = []
+        last_values = []
 
-    symbols = sorted(df['symbol'].unique())
-    for symbol in symbols:
-        df_symbol = df[df['symbol'] == symbol].copy()
+        symbols = sorted(df['symbol'].unique())
+        for symbol in symbols:
+            df_symbol = df[df['symbol'] == symbol].copy()
 
-        risk = RiskMeasurements(df_symbol)
-        vol = risk.historical_volatility()['vol_per_day']
-        vols.append(vol)
+            risk = RiskMeasurements(df_symbol)
+            vol = risk.historical_volatility()['vol_per_day']
+            vols.append(vol)
 
-        last_close = df_symbol.sort_values('date')['close'].dropna().iloc[-1]
-        last_values.append(last_close)
+            last_close = df_symbol.sort_values('date')['close'].dropna().iloc[-1]
+            last_values.append(last_close)
 
-    predictions['prediction'] = predictions['prediction'].apply(lambda x: np.array(x)[-1])
-    predictions = predictions.sort_values(by='symbol')
-    preds = predictions['prediction'].values
+        predictions['prediction'] = predictions['prediction'].apply(lambda x: np.array(x)[-1])
+        predictions = predictions.sort_values(by='symbol')
+        preds = predictions['prediction'].values
 
-    return {
-        "items": symbols,
-        "items_val": np.array(last_values),
-        "items_vol": np.array(vols),
-        "items_pred": preds,
-        "behaviour": behaviour,
-        "items_returns": np.zeros(len(symbols)),
-        "min_return": 0,
-        "optimizer": optimizer
-    }
+        return {
+            "items": symbols,
+            "items_val": np.array(last_values),
+            "items_vol": np.array(vols),
+            "items_pred": preds,
+            "behaviour": behaviour,
+            "items_returns": np.zeros(len(symbols)),
+            "min_return": 0,
+            "optimizer": optimizer
+        }
 
