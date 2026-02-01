@@ -82,8 +82,9 @@ SYMBOLS_YF_ATT = [
 ]
 
 SYMBOLS_FRED = ["M2SL", "NFCI", "TEDRATE"]
-BACEN_IDS = [1178, 4391,4189,11]
+BACEN_IDS = [1178,11]
 
+BACEN_SYMBOLS = {"Swap_DI_5Y":1178, "CDI":11}
 
 PERIOD_YF = 'max'
 INTERVAL_YF = '1d'
@@ -97,8 +98,7 @@ TODAY = pd.Timestamp.now().normalize()
 
 class DataCollector:
     def __init__(self, symbols_yf=SYMBOLS_YF_ATT, symbols_td=SYMBOLS_TD, symbols_fred=SYMBOLS_FRED, url=URL, api_key=API_KEY, fred_key=FRED_KEY,
-                 bacen_ids=BACEN_IDS,
-                 today_date=None, interval_yf=INTERVAL_YF, period_yf=PERIOD_YF,
+                 bacen_symbols=BACEN_SYMBOLS, interval_yf=INTERVAL_YF, period_yf=PERIOD_YF,
                  interval_td=INTERVAL_TD, period_td=PERIOD_TD):
         self.symbols_yf = symbols_yf
         self.symbols_td = symbols_td
@@ -108,13 +108,30 @@ class DataCollector:
         self.interval_yf = interval_yf
         self.interval_td = interval_td
         self.period_td = period_td
-        self.bacen_ids = bacen_ids
+        self.bacen_symbols = bacen_symbols
         self.url = url
-        self.today_date = today_date or pd.Timestamp.now().date()
+        self.today_date = pd.Timestamp.now().date()
         self.fred = Fred(api_key=fred_key)
 
+    def collect_all_data(self):
+        try:
+            self._collect_yfinance_data()
+            # self._collect_twelvedata_data()
+            self._collect_fred_data()
+            self._collect_bacen_data()
+        except Exception as e:
+            print(f"Erro ao coletar dados: {e}")
 
-    def collect_yfinance_data(self):
+    def update_all_data(self):
+        try:
+            self._update_yfinance_data()
+            # self._update_twelvedata_data()
+            self._update_fred_data()
+            self._update_bacen_data()
+        except Exception as e:
+            print(f"Erro ao atualizar dados: {e}")
+
+    def _collect_yfinance_data(self):
         for symbol in self.symbols_yf:
             try:
                 data = yf.download(
@@ -134,29 +151,16 @@ class DataCollector:
                     data.dropna(subset=['Open', 'High', 'Low', 'Close', 'Volume'], inplace=True)
 
 
-                    registros = []
-                    for _, row in data.iterrows():
-                        try:
-                            registros.append(MarketData(
-                                                    date=row['Date'].date(),
-                                                    open=Decimal(str(row['Open'])),
-                                                    high=Decimal(str(row['High'])),
-                                                    low=Decimal(str(row['Low'])),
-                                                    close=Decimal(str(row['Close'])),
-                                                    volume=int(row['Volume']),
-                                                    symbol=row['Symbol']
-                                                ))
-                        except Exception as e:
-                            print(f"Erro ao preparar registro de {symbol} em {row['Date']}: {e}")
+                    ret = self._process_and_store_data(data, symbol)
 
-                    MarketData.objects.bulk_create(registros, ignore_conflicts=True)
-                    print(f"{len(registros)} registros salvos para {symbol}.")
+                    if ret is not None:
+                        print(f"{ret} registros salvos para {symbol}.")
                 else:
                     print(f"Dados vazios para {symbol}.")
             except Exception as e:
                 print(f"Erro ao coletar {symbol}: {e}")
 
-    def collect_twelvedata_data(self):
+    def _collect_twelvedata_data(self):
         for symbol in self.symbols_td:
             print(f'Coletando dados de {symbol} via TwelveData...')
 
@@ -176,36 +180,26 @@ class DataCollector:
                 df['symbol'] = symbol
                 df.dropna(subset=['open', 'high', 'low', 'close', 'volume', 'datetime'], inplace=True)
 
-                registros = []
-                for _, row in df.iterrows():
-                    try:
-                        registros.append(MarketData(
-                            date=pd.to_datetime(row['datetime']).date(),
-                            open=row['open'],
-                            high=row['high'],
-                            low=row['low'],
-                            close=row['close'],
-                            volume=int(float(row['volume'])),
-                            symbol=row['symbol']
-                        ))
-                    except Exception as e:
-                        print(f"Erro ao preparar registro de {symbol} em {row.get('datetime')}: {e}")
+                df = df.rename(columns={
+                    'open': 'Open',
+                    'high': 'High',
+                    'low': 'Low',
+                    'close': 'Close',
+                    'volume': 'Volume',
+                    'datetime': 'Date'
+                })
 
-                MarketData.objects.bulk_create(registros, ignore_conflicts=True)
-                print(f"{len(registros)} registros salvos para {symbol}.")
+                ret = self._process_and_store_data(df, symbol)
+
+                if ret is not None:
+                    print(f"{ret} registros salvos para {symbol}.")
+
+
             else:
                 print(f"Erro ao buscar dados para {symbol}: {data.get('message', 'Sem mensagem de erro')}")
 
-    def collect_bacen_data(self):
-        hoje = datetime.today()
 
-        fim1 = hoje
-        inicio1 = fim1 - timedelta(days=365*10)  
-
-        fim2 = inicio1 - timedelta(days=1)  
-        inicio2 = fim2 - timedelta(days=365*10)  
-
-        def baixar_periodo(inicio, fim, serie, symbol):
+    def _baixar_periodo_bacen(self, inicio, fim, serie, symbol):
             data_inicial = inicio.strftime("%d/%m/%Y")
             data_final = fim.strftime("%d/%m/%Y")
             url = f"https://api.bcb.gov.br/dados/serie/bcdata.sgs.{serie}/dados?formato=csv&dataInicial={data_inicial}&dataFinal={data_final}"
@@ -243,110 +237,44 @@ class DataCollector:
 
             return df[['Date', 'Symbol', 'Close']]
 
-        df1_swap = baixar_periodo(inicio1, fim1, 1178, "Swap_DI_5Y")
-        df2_swap = baixar_periodo(inicio2, fim2, 1178, "Swap_DI_5Y")
-        df_swap = pd.concat([df2_swap, df1_swap], ignore_index=True)
 
-        df1_selic = baixar_periodo(inicio1, fim1, 4391, "Selic_Over")
-        df2_selic = baixar_periodo(inicio2, fim2, 4391, "Selic_Over")
-        df_selic = pd.concat([df2_selic, df1_selic], ignore_index=True)
+    def _collect_bacen_data(self):
+        hoje = datetime.today()
 
-        df1_selic_long = baixar_periodo(inicio1, fim1, 4189, "Selic_Over_Long")
-        df2_selic_long = baixar_periodo(inicio2, fim2, 4189, "Selic_Over_Long")
-        df_selic_long = pd.concat([df2_selic_long, df1_selic_long], ignore_index=True)
+        fim1 = hoje
+        inicio1 = fim1 - timedelta(days=365*10)  
 
-        df1_cdi = baixar_periodo(inicio1, fim1, 11, "CDI")
-        df2_cdi = baixar_periodo(inicio2, fim2, 11, "CDI")
-        df_cdi = pd.concat([df2_cdi, df1_cdi], ignore_index=True)
+        fim2 = inicio1 - timedelta(days=1)  
+        inicio2 = fim2 - timedelta(days=365*10) 
 
-        df_final = pd.concat([df_swap, df_selic, df_selic_long, df_cdi], ignore_index=True)
+        df_geral = pd.DataFrame() 
+
+        for symbol, serie in self.bacen_symbols.items():
+            print(f'Coletando dados de {symbol} (SGS {serie}) do BACEN...')
+            df1 = self._baixar_periodo_bacen(inicio1, fim1, serie, symbol)
+            df2 = self._baixar_periodo_bacen(inicio2, fim2, serie, symbol)
+
+            df_symbol = pd.concat([df2, df1], ignore_index=True)
+
+            df_geral = pd.concat([df_geral, df_symbol], ignore_index=True)
+
+        if df_geral.empty:
+            print("Nenhum dado coletado do BACEN.")
+            return
+        
+        df_final = df_geral.drop_duplicates(subset=['Date', 'Symbol'])
         df_final = df_final.sort_values('Date').reset_index(drop=True)
 
-        registros = []
-        for _, row in df_final.iterrows():
-            try:
-                registros.append(MarketData(
-                    date=row['Date'].date(),
-                    close=row['Close'],
-                    symbol=row['Symbol'],
-                    open=0,
-                    high=0,
-                    volume=0, 
-                    low=0
-                ))
-            except Exception as e:
-                print(f"Erro ao preparar registro de {row['Symbol']} em {row['Date']}: {e}")
+        ret = self._process_and_store_data(df_final, symbol=None)
 
-        if registros:
-            MarketData.objects.bulk_create(registros, ignore_conflicts=True)
-            print(f"{len(registros)} registros salvos Bacen.")
-        else:
-            print("Nenhum registro para salvar Bacen.")
+        if ret is not None:
+            print(f"{ret} registros salvos no banco.")
 
-    def update_yfinance_data(self):
-        today = pd.Timestamp(self.today_date)
-        # end_date = today + pd.Timedelta(days=1)
-        print(f"Data de atualização: {today}")
-        
-        for symbol in self.symbols_yf:
-            print(f'Atualizando dados de {symbol} via yFinance...')
 
-            try:
-                ult = MarketData.objects.filter(symbol=symbol).order_by('-date').first()
-                if ult:
-                    start_date = pd.Timestamp(ult.date) + pd.Timedelta(days=1)
-                else:
-                    start_date = pd.Timestamp('2000-01-01')
-
-                end_date = today
-                if start_date > end_date:
-                    print(f"Dados de {symbol} já estão atualizados.")
-                    continue
-
-                data = yf.download(
-                    tickers=symbol,
-                    start=start_date.strftime('%Y-%m-%d'),
-                    end=end_date.strftime('%Y-%m-%d'),
-                    interval=self.interval_yf,
-                    progress=False
-                )
-
-                if isinstance(data.columns, pd.MultiIndex):
-                    data.columns = data.columns.get_level_values(0)
-
-                if not data.empty:
-                    data.reset_index(inplace=True)
-                    data['Symbol'] = symbol
-                    data.dropna(subset=['Open', 'High', 'Low', 'Close', 'Volume'], inplace=True)
-
-                    registros = []
-                    for _, row in data.iterrows():
-                        try:
-                            registros.append(MarketData(
-                                date=row['Date'].date(),
-                                open=row['Open'],
-                                high=row['High'],
-                                low=row['Low'],
-                                close=row['Close'],
-                                volume=int(row['Volume']),
-                                symbol=row['Symbol']
-                            ))
-                        except Exception as e:
-                            print(f"Erro ao preparar registro: {e}")
-
-                    MarketData.objects.bulk_create(registros, ignore_conflicts=True)
-                    print(f"{len(registros)} registros atualizados para {symbol}.")
-
-                else:
-                    print(f"Nenhum dado novo para {symbol}.")
-
-            except Exception as e:
-                print(f"Erro ao atualizar {symbol}: {e}")
-
-    def collect_fred_data(self):
+    def _collect_fred_data(self):
         all_data = []
 
-        fred = Fred(api_key=FRED_KEY)
+        fred = self.fred
 
         for symbol in self.symbols_fred:
             print(f'Coletando dados de {symbol} do FRED...')
@@ -373,39 +301,22 @@ class DataCollector:
         final_df = pd.concat(all_data, ignore_index=True)
         final_df.dropna(subset=['Close'], inplace=True)
 
-        registros = []
-        for _, row in final_df.iterrows():
-            try:
-                registros.append(MarketData(
-                    date=row['Date'].date(),
-                    close=row['Close'],
-                    symbol=row['Symbol'],
-                    open=0,
-                    high=0,
-                    low=0,
-                    volume=0
-                ))
-            except Exception as e:
-                print(f"Erro ao preparar registro de {row['Symbol']} em {row['Date']}: {e}")
+        ret = self._process_and_store_data(final_df, symbol=None)
+        if ret is not None:
+            print(f"{ret} registros salvos no banco.")
 
-        if registros:
-            MarketData.objects.bulk_create(registros, ignore_conflicts=True)
-            print(f"{len(registros)} registros salvos no banco.")
         else:
             print("Nenhum registro para salvar.")
 
-    def update_twelvedata_data(self):
+
+    def _update_twelvedata_data(self):
         today = pd.Timestamp(self.today_date)
         print(f"Data de atualização TwelveData: {today}")
         
         for symbol in self.symbols_td:
             print(f'Atualizando dados de {symbol} via TwelveData...')
 
-            ult = MarketData.objects.filter(symbol=symbol).order_by('-date').first()
-            if ult:
-                start_date = ult.date + pd.Timedelta(days=1)
-            else:
-                start_date = pd.to_datetime('2000-01-01')
+            start_date = self._get_symbol_update_range(symbol)
 
             end_date = today
             if start_date > end_date:
@@ -430,24 +341,19 @@ class DataCollector:
                     df = pd.DataFrame(data['values'])
                     df['symbol'] = symbol
                     df.dropna(subset=['open', 'high', 'low', 'close', 'volume', 'datetime'], inplace=True)
+                    df = df.rename(columns={
+                        'open': 'Open',
+                        'high': 'High',
+                        'low': 'Low',
+                        'close': 'Close',
+                        'volume': 'Volume',
+                        'datetime': 'Date'
+                    })
 
-                    registros = []
-                    for _, row in df.iterrows():
-                        try:
-                            registros.append(MarketData(
-                                date=pd.to_datetime(row['datetime']).date(),
-                                open=row['open'],
-                                high=row['high'],
-                                low=row['low'],
-                                close=row['close'],
-                                volume=int(float(row['volume'])),
-                                symbol=row['symbol']
-                            ))
-                        except Exception as e:
-                            print(f"Erro ao preparar registro de {symbol} em {row.get('datetime')}: {e}")
+                    ret = self._process_and_store_data(df, symbol)
 
-                    MarketData.objects.bulk_create(registros, ignore_conflicts=True)
-                    print(f"{len(registros)} registros atualizados para {symbol}.")
+                    if ret is not None:
+                        print(f"{ret} registros atualizados para {symbol}.")
 
                 else:
                     msg = data.get('message', 'Sem mensagem de erro')
@@ -456,25 +362,16 @@ class DataCollector:
             except Exception as e:
                 print(f"Erro ao atualizar {symbol}: {e}")
 
-    def update_bacen_data(self):
+
+    def _update_bacen_data(self):
         today = pd.Timestamp(self.today_date)
         print(f"Data de atualização BACEN: {today}")
         
-        series_map = {
-            "Swap_DI_5Y": 1178,
-            "Selic_Over": 4391,
-            "Selic_Over_Long": 4189,
-            "CDI": 11
-        }
 
-        for symbol, serie in series_map.items():
+        for symbol, serie in self.bacen_symbols.items():
             print(f'Atualizando dados de {symbol} (SGS {serie})...')
 
-            ult = MarketData.objects.filter(symbol=symbol).order_by('-date').first()
-            if ult:
-                start_date = pd.Timestamp(ult.date) + pd.Timedelta(days=1)
-            else:
-                start_date = pd.Timestamp('2000-01-01')
+            start_date = self._get_symbol_update_range(symbol)
 
             url = (
                 f"https://api.bcb.gov.br/dados/serie/bcdata.sgs.{serie}/dados?"
@@ -507,36 +404,19 @@ class DataCollector:
             data['Close'] = data['Close'].astype(str).str.replace(',', '.').astype(float)
 
             df = data[['Date', 'Close']].copy()
-            df['Symbol'] = symbol
 
-            registros = []
-            for _, row in df.iterrows():
-                try:
-                    registros.append(MarketData(
-                        date=row['Date'].date(),
-                        close=row['Close'],
-                        symbol=row['Symbol'],
-                        open=0,
-                        high=0,
-                        low=0,
-                        volume=0
-                    ))
-                except Exception as e:
-                    print(f"Erro ao preparar registro de {symbol} em {row['Date']}: {e}")
+            ret = self._process_and_store_data(df, symbol)
 
-            MarketData.objects.bulk_create(registros, ignore_conflicts=True)
-            print(f"{len(registros)} registros atualizados para {symbol}.")
+            if ret is not None:
+                print(f"{ret} registros atualizados para {symbol}.")
+            
 
-    def update_fred_data(self):
+    def _update_fred_data(self):
         for symbol in self.symbols_fred:
             print(f'Atualizando dados de {symbol} do FRED...')
 
             try:
-                ult = MarketData.objects.filter(symbol=symbol).order_by('-date').first()
-                if ult:
-                    start_date = pd.Timestamp(ult.date) + pd.Timedelta(days=1)
-                else:
-                    start_date = pd.Timestamp('2000-01-01')
+                start_date = self._get_symbol_update_range(symbol)
 
                 data = self.fred.get_series(symbol, observation_start=start_date)
 
@@ -546,28 +426,105 @@ class DataCollector:
 
                 df = pd.DataFrame({
                     "Date": data.index,
-                    "Symbol": symbol,
                     "Close": data.values
                 })
 
-                registros = []
-                for _, row in df.iterrows():
-                    try:
-                        registros.append(MarketData(
-                            date=row['Date'].date(),
-                            close=row['Close'],
-                            symbol=row['Symbol'],
-                            open=0,
-                            high=0,
-                            low=0,
-                            volume=0
-                        ))
-                    except Exception as e:
-                        print(f"Erro ao preparar registro de {symbol} em {row['Date']}: {e}")
+                ret = self._process_and_store_data(df, symbol)
 
-                MarketData.objects.bulk_create(registros, ignore_conflicts=True)
-                print(f"{len(registros)} registros atualizados para {symbol}.")
+                if ret is not None:
+                    print(f"{ret} registros atualizados para {symbol}.")
 
             except Exception as e:
                 print(f"Erro ao atualizar {symbol}: {e}")
 
+
+    def _update_yfinance_data(self):
+        today = pd.Timestamp(self.today_date)
+        # end_date = today + pd.Timedelta(days=1)
+        print(f"Data de atualização: {today}")
+        
+        for symbol in self.symbols_yf:
+            print(f'Atualizando dados de {symbol} via yFinance...')
+
+            try:
+                start_date = self._get_symbol_update_range(symbol)
+
+                end_date = today
+                if start_date > end_date:
+                    print(f"Dados de {symbol} já estão atualizados.")
+                    continue
+
+                data = yf.download(
+                    tickers=symbol,
+                    start=start_date.strftime('%Y-%m-%d'),
+                    end=end_date.strftime('%Y-%m-%d'),
+                    interval=self.interval_yf,
+                    progress=False
+                )
+
+                if isinstance(data.columns, pd.MultiIndex):
+                    data.columns = data.columns.get_level_values(0)
+
+                if not data.empty:
+                    data.reset_index(inplace=True)
+                    data['Symbol'] = symbol
+                    data.dropna(subset=['Open', 'High', 'Low', 'Close', 'Volume'], inplace=True)
+
+                    ret = self._process_and_store_data(data, symbol)
+
+                    if ret is not None:
+                        print(f"{ret} registros atualizados para {symbol}.")
+
+                else:
+                    print(f"Nenhum dado novo para {symbol}.")
+
+            except Exception as e:
+                print(f"Erro ao atualizar {symbol}: {e}")
+
+    def _get_symbol_update_range(self, symbol):
+        ult = MarketData.objects.filter(symbol=symbol).order_by('-date').first()
+        if ult:
+            start_date = pd.Timestamp(ult.date) + pd.Timedelta(days=1)
+        else:
+            start_date = pd.Timestamp('2000-01-01')
+        return start_date
+
+
+    def _process_data_to_format(self, df, symbol):
+        try:
+            df = df.copy()
+            if symbol:
+                df['Symbol'] = symbol
+            df = df.dropna(subset=['Date', 'Close'])
+            df = df.fillna(0)
+
+            registros = []
+            for _, row in df.iterrows():
+                try:
+                    registros.append(MarketData(
+                        date=row['Date'].date(),
+                        open=row['Open'] if 'Open' in row else 0,
+                        high=row['High'] if 'High' in row else 0,
+                        low=row['Low'] if 'Low' in row else 0,
+                        close=row['Close'] if 'Close' in row else 0,
+                        volume=int(row['Volume']) if 'Volume' in row else 0,
+                        symbol=row['Symbol']
+                    ))
+                except Exception as e:
+                    print(f"Erro ao preparar registro de {symbol} em {row['Date']}: {e}")
+
+            return registros
+        except Exception as e:
+            print(f"Erro ao processar dados para {symbol}: {e}")
+            return []
+    
+
+    def _process_and_store_data(self, df, symbol):
+        try:
+            registros = self._process_data_to_format(df, symbol)
+            MarketData.objects.bulk_create(registros, ignore_conflicts=True)
+            print(f"{len(registros)} registros salvos para {symbol}.")
+            return len(registros)
+        except Exception as e:
+            print(f"Erro ao salvar dados para {symbol}: {e}")
+            return None

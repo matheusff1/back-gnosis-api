@@ -9,12 +9,6 @@ class Command(BaseCommand):
 
         collector = DataCollector()
 
-        collector.collect_yfinance_data()
-
-        collector.collect_fred_data()
-
-        collector.collect_cds_data()
-
-        collector.collect_bacen_data()
+        collector.collect_all_data()
 
         self.stdout.write(self.style.SUCCESS('Coleta de dados finalizada.'))

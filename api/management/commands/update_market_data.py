@@ -7,8 +7,6 @@ class Command(BaseCommand):
     def handle(self, *args, **kwargs):
         print("Iniciando atualização diária...")
         collector = DataCollector()
-        collector.update_yfinance_data()
-        collector.update_fred_data()
-        collector.update_cds_data()
-        collector.update_bacen_data()
-        print("Atualização finalizada.")
+        collector.update_all_data()
+
+        self.stdout.write(self.style.SUCCESS('Atualização de dados finalizada.'))
