@@ -66,8 +66,8 @@ DEFAULT_CALLBACKS = EarlyStopping(
 )
 
 DEFAULT_BATCH_SIZE = 32
-DEFAULT_EPOCHS = 60
-DEFAULT_TRAIN_RATIO = 0.9
+DEFAULT_EPOCHS = 100
+DEFAULT_TRAIN_RATIO = 0.8
 DEFAULT_WINDOW_SIZE = 60
 
 
@@ -275,7 +275,7 @@ def predictions_process():
 
 class PredictionModelV2:
     def __init__(self, callbacks, df, window_size, epochs, batch_size, 
-                 train_ratio=0.9, scaler_type='minmax', verbose=1):
+                 train_ratio=0.8, scaler_type='minmax', verbose=1):
  
         if not isinstance(df, pd.DataFrame):
             raise TypeError("df deve ser um pandas DataFrame")
@@ -739,7 +739,7 @@ def prepare_dataframe_for_model(df, target_symbol, selected_features):
 
 def run_all_predictions_v2(df, allowed_symbols, callbacks, 
                            window_size=60, epochs=100, batch_size=32, 
-                           train_ratio=0.9, scaler_type='minmax',
+                           train_ratio=0.8, scaler_type='minmax',
                            verbose=1, save_data=False,
                            **correlation_params):
    
@@ -965,3 +965,212 @@ def predictions_process_v2(allowed_symbols=DEFAULT_ALLOWED_SYMBOLS, callbacks=DE
     print(f'{"="*80}\n')
     
     return results
+
+
+
+class PredictionProcessor:
+    def __init__(self, allowed_symbols=DEFAULT_ALLOWED_SYMBOLS, callbacks=DEFAULT_CALLBACKS, 
+                 window_size=DEFAULT_WINDOW_SIZE, epochs=DEFAULT_EPOCHS, batch_size=DEFAULT_BATCH_SIZE,
+                 train_ratio=DEFAULT_TRAIN_RATIO, verbose=1, save_data=False,
+                 ):
+        self.allowed_symbols = allowed_symbols
+        self.callbacks = callbacks
+        self.window_size = window_size
+        self.epochs = epochs
+        self.batch_size = batch_size
+        self.verbose = verbose
+        self.save_data = save_data
+        self.train_ratio = train_ratio
+        self.full_df = self._get_full_dataframe()
+
+    
+    def _get_full_dataframe(self):
+        df = self.full_df.copy()
+        df = df[df['symbol'].isin(self.allowed_symbols)].reset_index(drop=True)
+        df['date'] = pd.to_datetime(df['date'])
+        df = df[df['date']>='2011-01-01'].reset_index(drop=True)
+        if df.empty:
+            raise ValueError(f"Nenhum dado para os símbolos permitidos: {self.allowed_symbols}")
+        return df
+
+    def predictions_process(self):
+        try:
+            result = self._run_all_predictions()
+        except Exception as e:
+            print(f' Erro durante processamento: {str(e)}')
+            return
+        
+    def __run_all_predictions(self):
+        return
+
+
+
+
+
+class ModelDataProcesser():
+    def __init__(self, full_df, target_symbol, allowed_symbols, 
+                 pos_threshold=0.70, neg_threshold=-0.45, 
+                 max_features=12, min_features=4, max_inter_corr=0.75, 
+                 minimum_samples=2500, years_baseline=10):
+        
+        self.df = full_df.copy()
+        self.target_symbol = target_symbol
+        self.allowed_symbols = allowed_symbols
+        self.pos_threshold = pos_threshold
+        self.neg_threshold = neg_threshold
+        self.max_features = max_features
+        self.min_features = min_features
+        self.max_inter_corr = max_inter_corr
+        self.minimum_samples = minimum_samples
+        self.years_baseline = years_baseline
+        self.start_year = pd.Timestamp.now().year - self.years_baseline
+
+        self._check_data_validity()
+
+
+    def _check_data_validity(self):
+        if not isinstance(self.df, pd.DataFrame):
+            raise TypeError("df deve ser um pandas DataFrame.")
+        if self.target_symbol not in self.allowed_symbols:
+            raise ValueError(f"target_symbol '{self.target_symbol}' não está em allowed_symbols.")
+
+        if self.target_symbol not in self.df['symbol'].values:
+            raise ValueError(f"Sem dados para {self.target_symbol} no dataframe.")
+
+
+    def _filter_df_data(self, df):
+        temp_df = df[df['date']>=pd.Timestamp(f'{self.start_year}-01-01')].copy()
+        for symbol in self.allowed_symbols:
+            symbol_data = temp_df[temp_df['symbol'] == symbol]
+            if len(symbol_data) < self.minimum_samples:
+                temp_df = temp_df[temp_df['symbol'] != symbol]
+
+        if self.target_symbol not in temp_df['symbol'].values:
+            raise ValueError(f"Após filtro, sem dados suficientes para {self.target_symbol}.")
+        return temp_df
+
+    def _create_pivot_table(self, df):
+        try:
+            return df.pivot_table(index='date', columns='symbol', values='close')
+        except Exception as e:
+            raise ValueError(f"Erro ao pivotear dataframe: {str(e)}")
+        
+
+    def _clean_data_table(self, pivot_df):
+        pivot_df = pivot_df.ffill().bfill()
+        pivot_df = pivot_df.dropna(axis=1, how='all')
+        if len(pivot_df) < 30:
+            raise ValueError(f"Poucos dados após tratamento: {len(pivot_df)} linhas. Mínimo: 30")
+        return pivot_df
+    
+
+    def _get_gross_selected_features(self, corr_data):
+        correlacoes = corr_data[self.target_symbol].drop(self.target_symbol, errors='ignore')
+        
+        positivas = correlacoes[correlacoes > self.pos_threshold].sort_values(ascending=False)
+        negativas = correlacoes[correlacoes < self.neg_threshold].sort_values()
+        
+        selecionados_pos = [(idx, float(val)) for idx, val in positivas.items()]
+        selecionados_neg = [(idx, float(val)) for idx, val in negativas.items()]
+        
+        selecionados = selecionados_pos + selecionados_neg
+        
+        if len(selecionados) == 0:
+            top_n = correlacoes.abs().sort_values(ascending=False).head(self.min_features)
+            selecionados = [(idx, float(correlacoes[idx])) for idx in top_n.index]
+        
+        if len(selecionados) > self.max_features:
+            if selecionados_pos and selecionados_neg:
+                total = len(selecionados_pos) + len(selecionados_neg)
+                quota_pos = max(1, round(self.max_features * len(selecionados_pos) / total))
+                quota_neg = self.max_features - quota_pos
+                selecionados = selecionados_pos[:quota_pos] + selecionados_neg[:quota_neg]
+            else:
+                top_n = correlacoes.abs().sort_values(ascending=False).head(self.max_features)
+                selecionados = [(idx, float(correlacoes[idx])) for idx in top_n.index]
+        
+        return selecionados
+    
+    
+    def _clean_from_redundant_features(self, gross_selected, corr_data):
+        final_selecionados = []
+        
+        for nome, val in sorted(gross_selected, key=lambda x: abs(x[1]), reverse=True):
+            redundante = False
+            for f_nome, _ in final_selecionados:
+                if nome in corr_data.index and f_nome in corr_data.columns:
+                    inter_corr = abs(corr_data.loc[nome, f_nome])
+                    if inter_corr > self.max_inter_corr:
+                        redundante = True
+                        break
+            
+            if not redundante:
+                final_selecionados.append((nome, val))
+        
+        candidatos = corr_data[self.target_symbol].drop(
+            [n for n, _ in final_selecionados] + [self.target_symbol], 
+            errors='ignore'
+        )
+        
+        while len(final_selecionados) < self.min_features and not candidatos.empty:
+            candidato_nome = candidatos.abs().idxmax()
+            candidato_val = float(corr_data[self.target_symbol][candidato_nome])
+            
+            nao_redundante = True
+            for f_nome, _ in final_selecionados:
+                if candidato_nome in corr_data.index and f_nome in corr_data.columns:
+                    if abs(corr_data.loc[candidato_nome, f_nome]) > self.max_inter_corr:
+                        nao_redundante = False
+                        break
+            
+            if nao_redundante:
+                final_selecionados.append((candidato_nome, candidato_val))
+            
+            candidatos = candidatos.drop(candidato_nome, errors='ignore')
+        
+        return final_selecionados
+
+
+    def _prepare_dataframe_for_model(self, selected_features):
+        try:
+            data = self._filter_df_data(self.df)
+            pivot_df = self._create_pivot_table(data)
+            pivot_df = self._clean_data_table(pivot_df)
+
+            features = [self.target_symbol] + [feat[0] for feat in selected_features]
+            model_df = pivot_df[features].copy()
+            rename_dict = {self.target_symbol: 'close'}
+            for feat_symbol in features:
+                if feat_symbol != self.target_symbol:
+                    rename_dict[feat_symbol] = f'close_{feat_symbol}'
+
+            model_df.rename(columns=rename_dict, inplace=True)
+            return model_df
+        except Exception as e:
+            raise ValueError(f"Erro ao preparar dataframe para o modelo: {str(e)}")
+
+
+    def _get_correlation_features(self):
+        try:
+            cleaned_df = self._filter_df_data(self.df)
+            pivot_df = self._create_pivot_table(cleaned_df)
+            pivot_df = self._clean_data_table(pivot_df)
+            corr_data = pivot_df.corr()
+            gross_selected = self._get_gross_selected_features(corr_data)
+            final_selected = self._clean_from_redundant_features(gross_selected, corr_data)
+            
+            return final_selected
+        except Exception as e:
+            raise ValueError(f"Erro ao obter features de correlação: {str(e)}")
+        
+    def process(self):
+        selected_features = self._get_correlation_features()
+        if len(selected_features) == 0:
+            raise ValueError("Nenhuma feature selecionada após análise de correlação.")
+        
+        if self.verbose > 0:
+            print(f'\nFeatures válidas ({len(selected_features)}):')
+
+        model_df = self._prepare_dataframe_for_model(selected_features)
+
+        return model_df, selected_features
