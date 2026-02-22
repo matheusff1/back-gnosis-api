@@ -610,7 +610,6 @@ def get_portfolio_risk(request):
         ).order_by('-date').first()
 
         assets = portfolio_current_data.distribution.keys()
-        print(assets)
         symbols = list(assets)
 
         distribution_dict = portfolio_current_data.distribution or {}
@@ -762,13 +761,13 @@ def get_optimized_portfolio(request):
 
             
 
-            data_mk = process_markowitz_data(symbols_data, behaviour='balanced', min_return=min_return)
+            data_mk = OptmizersDataProcessor.process_markowitz_data(symbols_data, behaviour='balanced', min_return=min_return)
 
             predictions_data = Prediction.objects.filter(symbol__in=symbols).order_by('date')
             predictions_data = pd.DataFrame(list(predictions_data.values('date', 'results', 'symbol', 'prediction')))
             predictions_data = predictions_data.drop_duplicates(subset=['symbol'], keep='last')
 
-            data_gn = process_gnosse_data(symbols_data, predictions_data, behaviour='aggressive')
+            data_gn = OptmizersDataProcessor.process_gnosse_data(symbols_data, predictions_data, behaviour='aggressive')
 
             try:
 
@@ -817,7 +816,7 @@ def get_starter_portfolio(request):
             data['date'] = pd.to_datetime(data['date'], errors='coerce')
             data = data[data['date'] >= pd.Timestamp.now() - pd.DateOffset(years=4)]
 
-            processed_data = process_markowitz_data(data, behaviour='neutral', min_return=0.0006)
+            processed_data = OptmizersDataProcessor.process_markowitz_data(data, behaviour='neutral', min_return=0.0006)
 
             optimizer = PortfolioOptimizer(items=processed_data['items'], items_val=processed_data['items_val'],
                                            items_returns=processed_data['items_returns'], items_pred=processed_data['items_pred'],
@@ -836,13 +835,12 @@ def get_starter_portfolio(request):
 
 
 
-###Checakar e verificar a lógica
-##Tirar as regras da view e colocar em um local apropriado
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_portfolio_returns_distribution(request):
     user = request.user
     portfolio_id = request.GET.get('id')
+    start_date_str = request.GET.get('start_date')
 
     try:
         portfolio = Portfolio.objects.filter(user=user, id=portfolio_id).first()
@@ -859,65 +857,47 @@ def get_portfolio_returns_distribution(request):
         portfolio_assets_distribution = tracking_records.last().distribution or {}
         assets = list(portfolio_assets_distribution.keys())
 
-        three_years_ago = pd.Timestamp.now() - pd.DateOffset(years=5)
         assets_data = MarketData.objects.filter(
             symbol__in=assets,
-            date__gte=three_years_ago
+            date__gte=start_date_str
         ).order_by('date')
 
         if not assets_data.exists():
             return Response({'error': 'No market data found for the assets in this portfolio.'}, status=404)
 
         assets_df = pd.DataFrame(list(
-            assets_data.values('symbol', 'date', 'close')
+            assets_data.values('symbol', 'date', 'close', 'high', 'low', 'open', 'volume')
         ))
 
         assets_df['date'] = pd.to_datetime(assets_df['date'])
 
-        dfs = []
-        for symbol in assets:
-            asset_df = assets_df[assets_df['symbol'] == symbol].sort_values('date')
-            asset_df['close'] = pd.to_numeric(asset_df['close'], errors='coerce')
-            asset_df = asset_df.dropna(subset=['close'])
-            asset_df['return'] = np.log(asset_df['close'] / asset_df['close'].shift(1))
-            dfs.append(
-                asset_df[['date', 'return']].rename(columns={'return': symbol})
-            )
+        portfolio_risk = PortfolioRisk(symbols=assets, distribution=list(portfolio_assets_distribution.values()), price_dict={}, df=assets_df)
 
-        returns_df = dfs[0]
-        for df in dfs[1:]:
-            returns_df = returns_df.merge(df, on='date', how='inner')
+        portfolio_returns = portfolio_risk.portfolio_log_returns()
 
-        returns_df = returns_df.dropna()
-
-        returns_df = returns_df.set_index('date')
-
-        order = list(portfolio_assets_distribution.keys())
-        returns_df = returns_df[order]
-
-        weights = pd.Series(portfolio_assets_distribution)[order]
-
-        portfolio_returns = returns_df.dot(weights)
+        individual_returns = portfolio_risk.returns_df
+        individual_returns = individual_returns[assets]
 
         return Response({
-            'returns_columns': returns_df.columns.tolist(),
-            'returns': returns_df.values.tolist(),
-            'portfolio_returns': portfolio_returns.values.tolist()
+            'returns_columns': assets,
+            'returns': individual_returns.values.tolist(),
+            'portfolio_returns': portfolio_returns['portfolio_log_returns']
         }, status=200)
 
+       
     except Exception as e:
         traceback.print_exc()
         return Response({'error': str(e)}, status=500)
     
 
 
-###Checakar e verificar a lógica
-##Tirar as regras da view e colocar em um local apropriado
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_portfolio_accumulated_returns(request):
     user = request.user
     portfolio_id = request.GET.get('id')
+    start_date_str = request.GET.get('start_date')
 
     try:
         portfolio = Portfolio.objects.filter(user=user, id=portfolio_id).first()
@@ -934,51 +914,29 @@ def get_portfolio_accumulated_returns(request):
         portfolio_assets_distribution = tracking_records.last().distribution or {}
         assets = list(portfolio_assets_distribution.keys())
 
-        five_years_ago = pd.Timestamp.now() - pd.DateOffset(years=5)
         assets_data = MarketData.objects.filter(
             symbol__in=assets,
-            date__gte=five_years_ago
+            date__gte=start_date_str
         ).order_by('date')
 
         if not assets_data.exists():
             return Response({'error': 'No market data found for assets.'}, status=404)
 
         assets_df = pd.DataFrame(list(
-            assets_data.values('symbol', 'date', 'close')
+            assets_data.values('symbol', 'date', 'close', 'high', 'low', 'open', 'volume')
         ))
 
         assets_df['date'] = pd.to_datetime(assets_df['date'])
 
-        dfs = []
-        for symbol in assets:
-            asset_df = assets_df[assets_df['symbol'] == symbol].sort_values('date')
-            asset_df['close'] = pd.to_numeric(asset_df['close'], errors='coerce')
-            asset_df = asset_df.dropna(subset=['close'])
-            asset_df['log_return'] = np.log(asset_df['close'] / asset_df['close'].shift(1))
-            dfs.append(
-                asset_df[['date', 'log_return']].rename(columns={'log_return': symbol})
-            )
+        portfolio_risk = PortfolioRisk(symbols=assets, distribution=list(portfolio_assets_distribution.values()), price_dict={}, df=assets_df)
 
-        returns_df = dfs[0]
-        for df in dfs[1:]:
-            returns_df = returns_df.merge(df, on='date', how='inner')
-
-        returns_df = returns_df.dropna().set_index('date')
-
-        order = list(portfolio_assets_distribution.keys())
-        returns_df = returns_df[order]
-
-        weights = pd.Series(portfolio_assets_distribution)[order]
-
-        assets_cum = np.exp(returns_df.cumsum()) - 1
-
-        portfolio_log_returns = returns_df.dot(weights)
-        portfolio_cum = np.exp(portfolio_log_returns.cumsum()) - 1
-
+        portfolio_accum_data = portfolio_risk.portfolio_acumulated_return()
+        portfolio_assets_accum_data = portfolio_risk.portfolio_individual_accumulated_return()
+ 
         return Response({
-            'accumulated_returns_columns': assets_cum.columns.tolist(),
-            'accumulated_returns': assets_cum.values.tolist(),
-            'accumulated_portfolio_returns': portfolio_cum.values.tolist()
+            'accumulated_returns_columns': assets,
+            'accumulated_returns': portfolio_assets_accum_data,
+            'accumulated_portfolio_returns': portfolio_accum_data,
         }, status=200)
 
     except Exception as e:

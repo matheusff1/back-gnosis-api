@@ -8,6 +8,7 @@ class Command(BaseCommand):
         print("Iniciando o processo de previsões.")
         try:
             #predictions_process()
-            predictions_process_v2()
+            pred_process = PredictionProcessor()
+            pred_process.predictions_process()
         except Exception as e:
             print(f"Ocorreu um erro ao executar o modelo de previsão: {e}")

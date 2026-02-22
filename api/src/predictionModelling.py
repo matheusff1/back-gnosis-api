@@ -968,50 +968,11 @@ def predictions_process_v2(allowed_symbols=DEFAULT_ALLOWED_SYMBOLS, callbacks=DE
 
 
 
-class PredictionProcessor:
-    def __init__(self, allowed_symbols=DEFAULT_ALLOWED_SYMBOLS, callbacks=DEFAULT_CALLBACKS, 
-                 window_size=DEFAULT_WINDOW_SIZE, epochs=DEFAULT_EPOCHS, batch_size=DEFAULT_BATCH_SIZE,
-                 train_ratio=DEFAULT_TRAIN_RATIO, verbose=1, save_data=False,
-                 ):
-        self.allowed_symbols = allowed_symbols
-        self.callbacks = callbacks
-        self.window_size = window_size
-        self.epochs = epochs
-        self.batch_size = batch_size
-        self.verbose = verbose
-        self.save_data = save_data
-        self.train_ratio = train_ratio
-        self.full_df = self._get_full_dataframe()
-
-    
-    def _get_full_dataframe(self):
-        df = self.full_df.copy()
-        df = df[df['symbol'].isin(self.allowed_symbols)].reset_index(drop=True)
-        df['date'] = pd.to_datetime(df['date'])
-        df = df[df['date']>='2011-01-01'].reset_index(drop=True)
-        if df.empty:
-            raise ValueError(f"Nenhum dado para os símbolos permitidos: {self.allowed_symbols}")
-        return df
-
-    def predictions_process(self):
-        try:
-            result = self._run_all_predictions()
-        except Exception as e:
-            print(f' Erro durante processamento: {str(e)}')
-            return
-        
-    def __run_all_predictions(self):
-        return
-
-
-
-
-
 class ModelDataProcesser():
     def __init__(self, full_df, target_symbol, allowed_symbols, 
                  pos_threshold=0.70, neg_threshold=-0.45, 
                  max_features=12, min_features=4, max_inter_corr=0.75, 
-                 minimum_samples=2500, years_baseline=10):
+                 minimum_samples=2500, years_baseline=10, verbose=1):
         
         self.df = full_df.copy()
         self.target_symbol = target_symbol
@@ -1023,6 +984,7 @@ class ModelDataProcesser():
         self.max_inter_corr = max_inter_corr
         self.minimum_samples = minimum_samples
         self.years_baseline = years_baseline
+        self.verbose = verbose
         self.start_year = pd.Timestamp.now().year - self.years_baseline
 
         self._check_data_validity()
@@ -1174,3 +1136,138 @@ class ModelDataProcesser():
         model_df = self._prepare_dataframe_for_model(selected_features)
 
         return model_df, selected_features
+    
+
+
+
+
+
+
+
+class PredictionProcessor:
+    def __init__(self, allowed_symbols=DEFAULT_ALLOWED_SYMBOLS, callbacks=DEFAULT_CALLBACKS, 
+                    window_size=DEFAULT_WINDOW_SIZE, epochs=DEFAULT_EPOCHS, batch_size=DEFAULT_BATCH_SIZE,
+                    train_ratio=DEFAULT_TRAIN_RATIO, verbose=1, save_data=False,
+                    ):
+            self.allowed_symbols = allowed_symbols
+            self.callbacks = callbacks
+            self.window_size = window_size
+            self.epochs = epochs
+            self.batch_size = batch_size
+            self.verbose = verbose
+            self.save_data = save_data
+            self.train_ratio = train_ratio
+            self.full_df = self._get_full_dataframe()
+
+    
+    def _get_full_dataframe(self):
+        all_data = MarketData.objects.all().values()
+        full_df = pd.DataFrame(list(all_data))
+        df = full_df.copy()
+        df = df[df['symbol'].isin(self.allowed_symbols)].reset_index(drop=True)
+        df['date'] = pd.to_datetime(df['date'])
+        df = df[df['date']>='2011-01-01'].reset_index(drop=True)
+        if df.empty:
+            raise ValueError(f"Nenhum dado para os símbolos permitidos: {self.allowed_symbols}")
+        return df
+    
+
+    def _save_to_db(self, result):
+        try:
+            prediction = Prediction(
+                date=result['date'],
+                symbol=result['symbol'],
+                prediction=result['predictions'].tolist(),
+                results={
+                    'history': result['history'],
+                    'metrics': result['metrics'],
+                    'selected_features': result['selected_features'],
+                    'n_features': result['n_features'],
+                    'model_config': result['model_config']
+                }
+            )
+            prediction.save()
+            if self.verbose > 0:
+                print(f'   {result["symbol"]} salvo')
+            return True
+        except Exception as e:
+            error_msg = f'Erro ao salvar {result["symbol"]}: {str(e)}'
+            print(f' {error_msg}')
+            raise
+
+    def predictions_process(self):
+        try:
+            savemennt_succes = []
+            results, errors = self._run_all_predictions()
+            for result in results:
+                savement_res = self._save_to_db(result)
+                if savement_res:
+                    savemennt_succes.append(result['symbol'])
+            print(f"\n\nProcessamento concluído! {len(savemennt_succes)}/{len(results)} previsões salvas com sucesso.")
+        except Exception as e:
+            print(f' Erro durante processamento: {str(e)}')
+            return
+        
+    def _run_all_predictions(self):
+        predictions = []
+        failed_symbols = []
+
+        for i, symbol in enumerate(self.allowed_symbols, 1):
+            print(f"\n\n---Processando [{i}/{len(self.allowed_symbols)}]: {symbol} ---")
+            try:
+                data_processor = ModelDataProcesser(
+                    full_df=self.full_df,
+                    target_symbol=symbol,
+                    allowed_symbols=self.allowed_symbols
+                    )
+                
+                model_df, selected_features = data_processor.process()
+
+                model_runner = PredictionModelV2(
+                    callbacks=self.callbacks,
+                    df=model_df,
+                    window_size=self.window_size,
+                    epochs=self.epochs,
+                    batch_size=self.batch_size,
+                    train_ratio=self.train_ratio,
+                    verbose=self.verbose
+                )
+
+                model_result = model_runner.run(save_data=self.save_data)
+                model_runner.clear_memory()
+
+                save = {
+                    'symbol': symbol,
+                    'predictions': model_result['predictions'],
+                    'metrics': model_result['metrics'],
+                    'history': model_result['history'].history,
+                    'selected_features': selected_features,  
+                    'n_features': len(selected_features) + 1,  
+                    'date': pd.Timestamp.now(),
+                    'scaler_X': model_result['scaler_X'],
+                    'scaler_y': model_result['scaler_y'],
+                    'model_config': {
+                        'window_size': self.window_size,
+                        'epochs': self.epochs,
+                        'batch_size': self.batch_size,
+                        'scaler_type': model_runner.scaler_type
+                    }
+                }
+
+                predictions.append(save)
+
+                if self.verbose > 0:
+                    print(f'\n{symbol} concluído!')
+                    print(f'   Previsões: {model_result["predictions"]}')
+                    print(f'   MAE: {model_result["metrics"]["mae"]:.6f}')
+
+            except Exception as e:
+                error_msg = f"Erro ao processar {symbol}: {str(e)}"
+                print(f'\n{error_msg}')
+                failed_symbols.append({
+                    'symbol': symbol,
+                    'error': str(e)
+                })
+                continue
+
+        return predictions, failed_symbols

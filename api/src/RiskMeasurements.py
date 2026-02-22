@@ -24,6 +24,11 @@ class RiskMeasurements:
     def log_returns(self):
         return self.df[['date', 'Log_Returns']].dropna()
 
+    def accumulated_return(self):
+        self.df['Accumulated_Return'] = self.df['Log_Returns'].cumsum()
+        self.df['Accumulated_Return_Index'] = np.exp(self.df['Accumulated_Return']) - 1
+        return self.df[['date', 'Accumulated_Return', 'Accumulated_Return_Index']].dropna()
+
     def historical_volatility(self):
         log_ret = self.df['Log_Returns'].dropna()
         std_log_ret = log_ret.std()
@@ -248,6 +253,7 @@ class PortfolioRisk:
         self.price_dict = price_dict
         self.df = df.copy()
         self.returns_df = self.__gen_log_returns_df()
+        self.cov_matrix = self.__gen_cov_matrix()
 
     def __gen_adjusted_dates_df(self):
         total_symbol = self.df['symbol'].nunique()
@@ -276,18 +282,58 @@ class PortfolioRisk:
 
 
         log_returns_df = pd.DataFrame(log_returns)
+        log_returns_df = log_returns_df[self.symbols]
         return log_returns_df
+    
 
-   
+    def __gen_cov_matrix(self):
+        return self.returns_df.cov()
+
+
     def __weights(self):
+        ##usada apenas se a distribuição for dada em termos de número absoluto dos ativos, 
+        # mas atualmente no banco de dados a distribuição já é dada em termos percentuais, então essa função não é utilizada
         prices = np.array([self.price_dict[s] for s in self.symbols])
         nominal_values = prices * self.distribution
         total_value = nominal_values.sum()
         return nominal_values / total_value
+    
+    def __weights(self):       
+        return self.distribution
+    
+
+    def portfolio_log_returns(self):
+        weights = self.__weights()
+        returns = self.returns_df[self.symbols]
+        portfolio_returns = np.dot(returns, weights)
+        return {
+            'portfolio_log_returns': portfolio_returns.tolist()
+        }
+    
+
+    def portfolio_individual_accumulated_return(self):
+        accumulated_returns = {}
+        for symbol in self.symbols:
+            asset_risk = RiskMeasurements(self.df[self.df['symbol'] == symbol])
+            asset_accumulated_return = asset_risk.accumulated_return()
+            accumulated_returns[symbol] = asset_accumulated_return[['date', 'Accumulated_Return', 'Accumulated_Return_Index']].dropna().reset_index(drop=True)
+        return accumulated_returns
+    
+
+    def portfolio_acumulated_return(self):
+        weights = self.__weights()
+        returns = self.returns_df[self.symbols]
+        portfolio_returns = np.dot(returns,weights)
+        portfolio_accumulated_return = portfolio_returns.cumsum()
+        portfolio_acumulated_return_index = np.exp(portfolio_returns.cumsum()) - 1
+        return {
+            'portfolio_accumulated_return': portfolio_accumulated_return.tolist(),
+            'portfolio_acumulated_return_index': portfolio_acumulated_return_index.tolist()
+        }
 
     def portfolio_volatility(self):
         weights = self.__weights()
-        cov_matrix = self.returns_df.cov()
+        cov_matrix = self.__gen_cov_matrix()
         portfolio_vol = np.sqrt(np.dot(weights.T, np.dot(cov_matrix.values, weights)))
         return {
             'portfolio_volatility': portfolio_vol,
@@ -312,7 +358,7 @@ class PortfolioRisk:
             'individual_volatilities': vols,
         }
 
-    def portfolio_var(self, z=1.65):
+    def portfolio_var(self, z=2.576):
         vol_data = self.portfolio_volatility()
         portfolio_vol = vol_data['portfolio_volatility']
         total_value = np.sum([self.price_dict[s] * w for s, w in zip(self.symbols, self.distribution)])
@@ -323,7 +369,7 @@ class PortfolioRisk:
             'var_annualized': -var * np.sqrt(252),
             'var_monthly': -var * np.sqrt(21),
             'var_weekly': -var * np.sqrt(5),
-            'confidence_level': '95%' 
+            'confidence_level': '99%' 
         }
 
     def full_process(self):
@@ -334,6 +380,7 @@ class PortfolioRisk:
             'portfolio_correlation': self.portfolio_correlation(),
             'weights': self.__weights().tolist(),
         }
+
 
 
 class OptmizersDataProcessor:
@@ -402,4 +449,6 @@ class OptmizersDataProcessor:
             "min_return": 0,
             "optimizer": optimizer
         }
+
+
 
