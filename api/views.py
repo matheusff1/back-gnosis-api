@@ -599,6 +599,7 @@ def add_asset_to_portfolio(request):
 def get_portfolio_risk(request):
     user = request.user
     portfolio_id = request.GET.get('id')
+    start_date_str = request.GET.get('start_date',None)
 
     try:
         portfolio = Portfolio.objects.filter(user=user, id=portfolio_id).first()
@@ -615,14 +616,12 @@ def get_portfolio_risk(request):
         distribution_dict = portfolio_current_data.distribution or {}
         distribution = [distribution_dict.get(symbol, 0.0) for symbol in symbols]
 
-        symbols_data = MarketData.objects.filter(symbol__in=symbols).order_by('date')
+        symbols_data = MarketData.objects.filter(symbol__in=symbols, date__gte=start_date_str).order_by('date')
         symbols_data = pd.DataFrame(list(symbols_data.values('symbol', 'date', 'close', 'high', 'low', 'open', 'volume')))
         if symbols_data.empty:
             return Response({'error': 'No market data found for these symbols.'}, status=404)
 
-        three_years_ago = pd.Timestamp.now() - pd.DateOffset(years=3)
         symbols_data['date'] = pd.to_datetime(symbols_data['date'], errors='coerce')
-        symbols_data = symbols_data[symbols_data['date'] >= three_years_ago]
 
         latest_prices = symbols_data.sort_values('date').drop_duplicates(subset=['symbol'], keep='last')
         price_dict = latest_prices.set_index('symbol')['close'].apply(float).to_dict()
@@ -639,6 +638,7 @@ def get_portfolio_risk(request):
     except Exception as e:
         traceback.print_exc()
         return Response({'error': str(e)}, status=500)
+
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -736,6 +736,7 @@ def get_asset_risk_data(request, symb):
 
     return JsonResponse({'error': 'Invalid request method.'}, status=405)
 
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_optimized_portfolio(request):
@@ -803,7 +804,6 @@ def get_optimized_portfolio(request):
     return JsonResponse({'error': 'Invalid request method.'}, status=405)
 
 
-
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_starter_portfolio(request):
@@ -832,7 +832,6 @@ def get_starter_portfolio(request):
             return JsonResponse({'error': str(e)}, status=500)
         
     return JsonResponse({'error': 'Invalid request method.'}, status=405)
-
 
 
 @api_view(['GET'])
@@ -890,8 +889,6 @@ def get_portfolio_returns_distribution(request):
         return Response({'error': str(e)}, status=500)
     
 
-
-
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_portfolio_accumulated_returns(request):
@@ -942,7 +939,6 @@ def get_portfolio_accumulated_returns(request):
     except Exception as e:
         traceback.print_exc()
         return Response({'error': str(e)}, status=500)
-
 
 
 @api_view(['GET'])
