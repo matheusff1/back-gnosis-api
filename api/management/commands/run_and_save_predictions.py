@@ -1,5 +1,5 @@
 from django.core.management.base import BaseCommand
-from api.src.predictionModelling import *
+from api.quant.src.predictionModelling import *
 
 class Command(BaseCommand):
     help = 'Executa as predições e salva os resultados no banco de dados'

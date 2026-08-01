@@ -16,7 +16,7 @@ def get_chat_analysis(prompt= """
                     - Notícias relacionadas ao ativo
                     -Resumo geral e interpretação dos dados"""
                       ,symbol='PETR4.SA'):
-    symbol_data = MarketData.objects.filter(symbol=symbol).order_by('date')
+    symbol_data = MarketData.objects.filter(asset__symbol=symbol).order_by('date')
     if not symbol_data.exists():
         return {'error': 'No market data found for the given symbol.'}
     df = pd.DataFrame(symbol_data.values('date','close', 'open', 'high', 'low', 'volume'))

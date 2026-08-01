@@ -6,15 +6,16 @@ from decimal import Decimal
 import os
 import django
 from django.conf import settings
-from projetob.settings import TWELVE_DATA_API_KEY, FRED_API_KEY 
+from gnosis.settings import TWELVE_DATA_API_KEY, FRED_API_KEY 
 from fredapi import Fred
 import io
 from datetime import datetime, timedelta
 
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "projetob.settings")
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "gnosis.settings")
 django.setup()
 
-from api.models import MarketData  
+from api.models import Asset, MarketData
+from api.market.services import AssetCatalogService
 
 API_KEY = TWELVE_DATA_API_KEY  
 FRED_KEY = FRED_API_KEY
@@ -97,18 +98,21 @@ TODAY = pd.Timestamp.now().normalize()
 ##ATENÇÃO: Rever as funções de coleta e atualização dos dados do BACEN, estão explicitas no código e precisam ser mais modulares e limpas.
 
 class DataCollector:
-    def __init__(self, symbols_yf=SYMBOLS_YF_ATT, symbols_td=SYMBOLS_TD, symbols_fred=SYMBOLS_FRED, url=URL, api_key=API_KEY, fred_key=FRED_KEY,
-                 bacen_symbols=BACEN_SYMBOLS, interval_yf=INTERVAL_YF, period_yf=PERIOD_YF,
+    def __init__(self, symbols_yf=None, symbols_td=None, symbols_fred=None, url=URL, api_key=API_KEY, fred_key=FRED_KEY,
+                 bacen_symbols=None, interval_yf=INTERVAL_YF, period_yf=PERIOD_YF,
                  interval_td=INTERVAL_TD, period_td=PERIOD_TD):
-        self.symbols_yf = symbols_yf
-        self.symbols_td = symbols_td
-        self.symbols_fred = symbols_fred
+        # Por padrão, os ativos a coletar/atualizar vêm do catálogo (AssetSource
+        # no banco). Ainda é possível passar listas explícitas (ex.: testes) ou
+        # cair nas constantes legadas deste módulo.
+        self.symbols_yf = symbols_yf if symbols_yf is not None else AssetCatalogService.source_symbols('yfinance')
+        self.symbols_td = symbols_td if symbols_td is not None else AssetCatalogService.source_symbols('twelvedata')
+        self.symbols_fred = symbols_fred if symbols_fred is not None else AssetCatalogService.source_symbols('fred')
+        self.bacen_symbols = bacen_symbols if bacen_symbols is not None else AssetCatalogService.bacen_series()
         self.api_key = api_key
         self.period_yf = period_yf
         self.interval_yf = interval_yf
         self.interval_td = interval_td
         self.period_td = period_td
-        self.bacen_symbols = bacen_symbols
         self.url = url
         self.today_date = pd.Timestamp.now().date()
         self.fred = Fred(api_key=fred_key)
@@ -482,7 +486,7 @@ class DataCollector:
                 print(f"Erro ao atualizar {symbol}: {e}")
 
     def _get_symbol_update_range(self, symbol):
-        ult = MarketData.objects.filter(symbol=symbol).order_by('-date').first()
+        ult = MarketData.objects.filter(asset__symbol=symbol).order_by('-date').first()
         if ult:
             start_date = pd.Timestamp(ult.date) + pd.Timedelta(days=1)
         else:
@@ -501,6 +505,10 @@ class DataCollector:
             registros = []
             for _, row in df.iterrows():
                 try:
+                    asset = self._asset_for_symbol(row['Symbol'])
+                    if asset is None:
+                        print(f"Sem Asset para o símbolo {row['Symbol']}; registro ignorado.")
+                        continue
                     registros.append(MarketData(
                         date=row['Date'].date(),
                         open=row['Open'] if 'Open' in row else 0,
@@ -508,7 +516,7 @@ class DataCollector:
                         low=row['Low'] if 'Low' in row else 0,
                         close=row['Close'] if 'Close' in row else 0,
                         volume=int(row['Volume']) if 'Volume' in row else 0,
-                        symbol=row['Symbol']
+                        asset=asset,
                     ))
                 except Exception as e:
                     print(f"Erro ao preparar registro de {symbol} em {row['Date']}: {e}")
@@ -517,6 +525,12 @@ class DataCollector:
         except Exception as e:
             print(f"Erro ao processar dados para {symbol}: {e}")
             return []
+
+    def _asset_for_symbol(self, symbol):
+        """Resolve o Asset pelo símbolo (cache em memória)."""
+        if not hasattr(self, '_asset_cache'):
+            self._asset_cache = {a.symbol: a for a in Asset.objects.all()}
+        return self._asset_cache.get(symbol)
     
 
     def _process_and_store_data(self, df, symbol):

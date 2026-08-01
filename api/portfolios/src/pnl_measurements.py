@@ -1,85 +1,104 @@
-@api_view(['GET'])
-@permission_classes([IsAuthenticated])
-def get_portfolio_pnl(request):
-    user = request.user
-    portfolio_id = request.GET.get('id')
-    
-    if not portfolio_id:
-        return JsonResponse({'error': 'Portfolio ID not provided.'}, status=400)
-    
-    try:
-        portfolio = Portfolio.objects.filter(user=user, id=portfolio_id).first()
-        if not portfolio:
-            return JsonResponse({'error': 'Portfolio not found.'}, status=404)
-        
-        tracking_records = PortfolioTracking.objects.filter(
-            portfolio=portfolio
-        ).order_by('date')
-        
-        if not tracking_records.exists():
-            return JsonResponse({'error': 'No tracking data found for this portfolio.'}, status=404)
-        
-        tracking_df = pd.DataFrame(list(tracking_records.values('date', 'balance', 'distribution')))
-        
-        initial_record = tracking_records.first()
-        current_record = tracking_records.last()
-        
-        initial_balance = float(initial_record.balance)
-        current_balance = float(current_record.balance)
-        initial_distribution = initial_record.distribution or {}
-        current_distribution = current_record.distribution or {}
-        
-        all_symbols = set(list(initial_distribution.keys()) + list(current_distribution.keys()))
-        
-        symbols_data = MarketData.objects.filter(symbol__in=all_symbols).order_by('date')
-        
-        if not symbols_data.exists():
-            return JsonResponse({'error': 'No market data found for these symbols.'}, status=404)
-        
-        df = pd.DataFrame(list(symbols_data.values('symbol', 'date', 'close')))
+from datetime import timedelta
+
+import numpy as np
+import pandas as pd
+from django.db.models import F
+from django.http import JsonResponse
+
+
+class PortfolioPnlCalculator:
+    def __init__(self, tracking_records, symbols_data, assets):
+        self.tracking_records = tracking_records
+        self.symbols_data = symbols_data
+        self.assets = assets or []
+
+        self.tracking_df = pd.DataFrame(
+            list(self.tracking_records.values('date', 'balance'))
+        )
+
+        self.initial_record = self.tracking_records.first()
+        self.current_record = self.tracking_records.last()
+
+        self.initial_balance = float(self.initial_record.balance)
+        self.current_balance = float(self.current_record.balance)
+        self.initial_distribution = self.initial_record.distribution_map()
+        self.current_distribution = self.current_record.distribution_map()
+
+        self.all_symbols = set(self.initial_distribution.keys()) | set(
+            self.current_distribution.keys()
+        )
+
+        self.assets_map = {
+            asset.get('symbol'): asset
+            for asset in self.assets
+            if asset.get('symbol')
+        }
+
+        self.market_df = self._build_market_df()
+
+    def _build_market_df(self):
+        df = pd.DataFrame(list(
+            self.symbols_data.values('date', 'close', symbol=F('asset__symbol'))
+        ))
         df['date'] = pd.to_datetime(df['date'])
-        
-        latest_prices = df.loc[df.groupby('symbol')['date'].idxmax()]
-        latest_prices_dict = dict(zip(latest_prices['symbol'], latest_prices['close']))
-        
+        return df
+
+    def _latest_prices_dict(self):
+        latest_prices = self.market_df.loc[
+            self.market_df.groupby('symbol')['date'].idxmax()
+        ]
+        return dict(zip(latest_prices['symbol'], latest_prices['close']))
+
+    def _week_ago_prices_dict(self):
         one_week_ago = pd.Timestamp.now() - timedelta(weeks=1)
-        week_ago_data = df[df['date'] >= one_week_ago]
-        week_ago_prices = week_ago_data.loc[week_ago_data.groupby('symbol')['date'].idxmin()]
-        week_ago_prices_dict = dict(zip(week_ago_prices['symbol'], week_ago_prices['close']))
-        
-        assets = portfolio.assets
-        assets_map = {asset['symbol']: asset for asset in assets}
-        
+        week_ago_data = self.market_df[self.market_df['date'] >= one_week_ago]
+        if week_ago_data.empty:
+            return {}
+
+        week_ago_prices = week_ago_data.loc[
+            week_ago_data.groupby('symbol')['date'].idxmin()
+        ]
+        return dict(zip(week_ago_prices['symbol'], week_ago_prices['close']))
+
+    def _resolve_quantity(self, symbol, current_asset_value, current_price):
+        if symbol in self.assets_map:
+            return float(self.assets_map[symbol].get('quantity', 0))
+        return current_asset_value / current_price if current_price > 0 else 0
+
+    def _build_pnl_rows(self, latest_prices, week_ago_prices):
         pnl_data = []
-        
-        for symbol in all_symbols:
-            initial_weight = float(initial_distribution.get(symbol, 0))
-            current_weight = float(current_distribution.get(symbol, 0))
-            
-            initial_asset_value = initial_balance * initial_weight
-            current_asset_value = current_balance * current_weight
-            
-            current_price = float(latest_prices_dict.get(symbol, 0))
-            week_ago_price = float(week_ago_prices_dict.get(symbol, current_price))
-            
+
+        for symbol in self.all_symbols:
+            initial_weight = float(self.initial_distribution.get(symbol, 0))
+            current_weight = float(self.current_distribution.get(symbol, 0))
+
+            initial_asset_value = self.initial_balance * initial_weight
+            current_asset_value = self.current_balance * current_weight
+
+            current_price = float(latest_prices.get(symbol, 0))
+            week_ago_price = float(week_ago_prices.get(symbol, current_price))
+
             if current_price <= 0:
                 continue
-            
-            if symbol in assets_map:
-                quantity = float(assets_map[symbol].get('quantity', 0))
-            else:
-                quantity = current_asset_value / current_price if current_price > 0 else 0
-            
+
+            quantity = self._resolve_quantity(
+                symbol, current_asset_value, current_price
+            )
+
             if quantity <= 0:
                 continue
-            
+
             average_price = initial_asset_value / quantity if quantity > 0 else 0
-            
+
             pnl_value = current_asset_value - initial_asset_value
-            pnl_percent = ((current_asset_value - initial_asset_value) / initial_asset_value * 100) if initial_asset_value > 0 else 0
-            
-            week_change = ((current_price - week_ago_price) / week_ago_price * 100) if week_ago_price > 0 else 0
-            
+            pnl_percent = (
+                (current_asset_value - initial_asset_value) / initial_asset_value * 100
+            ) if initial_asset_value > 0 else 0
+
+            week_change = (
+                (current_price - week_ago_price) / week_ago_price * 100
+            ) if week_ago_price > 0 else 0
+
             pnl_data.append({
                 'symbol': symbol,
                 'quantity': round(quantity, 2),
@@ -94,28 +113,38 @@ def get_portfolio_pnl(request):
                 'initial_weight': round(initial_weight * 100, 2),
                 'current_weight': round(current_weight * 100, 2),
             })
-        
-        total_pnl_value = current_balance - initial_balance
-        total_pnl_percent = ((current_balance - initial_balance) / initial_balance * 100) if initial_balance > 0 else 0
-        tracking_df['balance'] = pd.to_numeric(tracking_df['balance'], errors='coerce')
-        returns = tracking_df['balance'] / tracking_df['balance'].shift(1)
+
+        return pnl_data
+
+    def _balance_volatility(self):
+        self.tracking_df['balance'] = pd.to_numeric(
+            self.tracking_df['balance'], errors='coerce'
+        )
+        returns = self.tracking_df['balance'] / self.tracking_df['balance'].shift(1)
         returns = returns.dropna()
-        portfolio_balance_vol = np.log(returns).std() * np.sqrt(252)
+        return np.log(returns).std() * np.sqrt(252)
 
+    def calculate(self):
+        latest_prices = self._latest_prices_dict()
+        week_ago_prices = self._week_ago_prices_dict()
+        pnl_data = self._build_pnl_rows(latest_prices, week_ago_prices)
 
-        return JsonResponse({
+        total_pnl_value = self.current_balance - self.initial_balance
+        total_pnl_percent = (
+            (self.current_balance - self.initial_balance) / self.initial_balance * 100
+        ) if self.initial_balance > 0 else 0
+
+        portfolio_balance_vol = self._balance_volatility()
+
+        return {
             'pnl_data': pnl_data,
             'pnl_general': {
-                'initial_balance': round(initial_balance, 2),
-                'current_balance': round(current_balance, 2),
+                'initial_balance': round(self.initial_balance, 2),
+                'current_balance': round(self.current_balance, 2),
                 'total_pnl_value': round(total_pnl_value, 2),
                 'total_pnl_percent': round(total_pnl_percent, 2),
-                'initial_date': initial_record.date.isoformat(),
-                'current_date': current_record.date.isoformat(),
+                'initial_date': self.initial_record.date.isoformat(),
+                'current_date': self.current_record.date.isoformat(),
                 'balance_volatility': round(portfolio_balance_vol, 4)
             }
-        }, status=200)
-    
-    except Exception as e:
-        traceback.print_exc()
-        return JsonResponse({'error': str(e)}, status=500)
+        }

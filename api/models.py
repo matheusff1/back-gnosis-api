@@ -1,92 +1,43 @@
-from django.db import models
-from django.conf import settings
+"""Agregador de modelos do app `api`.
 
+Os modelos vivem em cada domínio (`api/market`, `api/quant`, `api/portfolios`),
+mas continuam registrados sob o app_label `api`. Este módulo re-exporta todos
+eles para que o Django os descubra (ele importa `api.models`) e para manter
+compatível qualquer `from api.models import X` já existente no projeto.
+"""
 
+from .market.models import (
+    Asset,
+    AssetSource,
+    AssetType,
+    DataSource,
+    MarketData,
+)
+from .quant.models import (
+    Prediction,
+    PredictionFeature,
+    PredictionPoint,
+    PredictionTrainingEpoch,
+)
+from .portfolios.models import (
+    Portfolio,
+    PortfolioAsset,
+    PortfolioTracking,
+    PortfolioTrackingAsset,
+)
 
-#COLUNAS DE MARKET DATA: Date	Close	High	Low	Open	Volume	Symbol
-class MarketData(models.Model):
-    date = models.DateField()
-    close = models.DecimalField(max_digits=20, decimal_places=2)
-    high = models.DecimalField(max_digits=20, decimal_places=2)
-    low = models.DecimalField(max_digits=20, decimal_places=2)
-    open = models.DecimalField(max_digits=20, decimal_places=2)
-    volume = models.BigIntegerField()
-    symbol = models.CharField(max_length=10)
-    class Meta:
-        db_table = 'market_data'
-        unique_together = ('date', 'symbol')
-        ordering = ['date']
-        verbose_name = 'Market Data'
-        verbose_name_plural = 'Market Data Records'
-    def __str__(self):
-        return f"{self.symbol} - {self.date} - Close: {self.close}"
-    
-
-class Prediction(models.Model):
-    date = models.DateField()
-    results = models.JSONField()
-    symbol = models.CharField(max_length=10)
-    prediction = models.JSONField(default=list)
-    
-    class Meta:
-        db_table = 'predictions'
-        unique_together = ('date', 'symbol')
-        ordering = ['date']
-        verbose_name = 'Prediction'
-        verbose_name_plural = 'Predictions'
-    
-    def __str__(self):
-        return f"{self.symbol} - {self.date} - Prediction: {self.prediction}"
-    
-
-
-
-class Portfolio(models.Model):
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name='portfolios'
-    )
-    name = models.CharField(max_length=150)
-    description = models.TextField(blank=True, null=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    assets = models.JSONField(default=list)
-
-    initial_distribution = models.JSONField(default=dict)
-
-    current_distribution = models.JSONField(default=dict)
-
-    initial_balance = models.DecimalField(max_digits=20, decimal_places=2, default=0)
-
-    current_balance = models.DecimalField(max_digits=20, decimal_places=2, default=0)
-
-    class Meta:
-        db_table = 'portfolio'
-        verbose_name = 'Portfolio'
-        verbose_name_plural = 'Portfolios'
-        ordering = ['-created_at']
-
-    def __str__(self):
-        return f"{self.name} - {self.user.email}"
-    
-
-class PortfolioTracking(models.Model):
-    portfolio = models.ForeignKey(
-        Portfolio,
-        on_delete=models.CASCADE,
-        related_name='tracking_data'
-    )
-    date = models.DateTimeField()
-    balance = models.DecimalField(max_digits=20, decimal_places=2)
-    distribution = models.JSONField(default=dict)
-
-    class Meta:
-        db_table = 'portfolio_tracking'
-        unique_together = ('portfolio', 'date')
-        ordering = ['date']
-        verbose_name = 'Portfolio Tracking'
-        verbose_name_plural = 'Portfolio Tracking Records'
-
-    def __str__(self):
-        return f"{self.portfolio.name} - {self.date} - PnL: {self.balance}"
+__all__ = [
+    'MarketData',
+    'DataSource',
+    'AssetType',
+    'Asset',
+    'AssetSource',
+    'Prediction',
+    'PredictionPoint',
+    'PredictionFeature',
+    'PredictionTrainingEpoch',
+    'Portfolio',
+    'PortfolioAsset',
+    'PortfolioTracking',
+    'PortfolioTrackingAsset',
+]
