@@ -1,8 +1,9 @@
 from decimal import Decimal
 import pandas as pd
 from django.utils import timezone
-from api.models import Asset, Portfolio, PortfolioTracking, PortfolioTrackingAsset, MarketData
+from api.models import Asset, Portfolio, PortfolioConfig, PortfolioTracking, PortfolioTrackingAsset, MarketData
 import traceback
+from api.quant.services import OptimizationService
 
 
 class PortfolioDataUpdater:
@@ -120,6 +121,21 @@ class PortfolioDataUpdater:
 
             if portfolio_current_balance is None or assets_current_values is None:
                 return False
+
+
+            config = PortfolioConfig.objects.filter(portfolio_id=portfolio_id).first()
+            if config and config.active_auto_optimization and self._should_rebalance(config, latest_market_date):
+                optimized = self._optimized_distribution(
+                    symbols=list(portfolio_last_distribution.keys()),
+                    config=config,
+                    valid_symbols=set(assets_current_values.keys()),
+                )
+                if optimized:
+                    portfolio_current_distribution = optimized
+                    config.last_optimization_date = latest_market_date
+                    config.save(update_fields=['last_optimization_date'])
+                    print(f"  Portfolio {portfolio_id} REBALANCEADO via {config.optimization_model} "
+                          f"(freq={config.update_frequency}d).")
 
             tracking, action = self._save_tracking_data(
                 portfolio_id,
@@ -290,8 +306,31 @@ class PortfolioDataUpdater:
             ))
         PortfolioTrackingAsset.objects.bulk_create(positions)
 
+    def _should_rebalance(self, config, latest_market_date):
+        if config.last_optimization_date is None:
+            return True
+        return (latest_market_date - config.last_optimization_date).days >= config.update_frequency
 
-    def _check_portfolio_conditions(self, 
+    def _optimized_distribution(self, symbols, config, valid_symbols):
+
+        horizon = config.update_frequency if config.optimization_model == 'gnosse' else None
+        target = OptimizationService.target_weights(
+            symbols, config.optimization_model, horizon=horizon
+        )
+        if not target:
+            return None
+
+        target = {
+            s: w for s, w in target.items()
+            if s in valid_symbols and w is not None
+        }
+        total = sum(target.values())
+        if total <= 0:
+            return None
+        return {s: w / total for s, w in target.items()}
+
+
+    def _check_portfolio_conditions(self,
                                     portfolio_id, 
                                     portfolio_last_data, 
                                     portfolio_last_distribution,

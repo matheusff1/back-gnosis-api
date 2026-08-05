@@ -46,4 +46,6 @@ urlpatterns = [
     path('api/get_all_predictions/', get_all_predictions_with_analysis, name='get_all_predictions'),
     path('api/get_portfolio_returns_distribution/', get_portfolio_returns_distribution, name='get_portfolio_returns_distribution'),
     path('api/get_portfolio_accumulated_returns/', get_portfolio_accumulated_returns, name='get_portfolio_accumulated_returns'),
+    path('api/get_portfolio_config/', get_portfolio_config, name='get_portfolio_config'),
+    path('api/update_portfolio_config/', update_portfolio_config, name='update_portfolio_config'),
 ]

@@ -22,6 +22,7 @@ from .quant.models import (
 from .portfolios.models import (
     Portfolio,
     PortfolioAsset,
+    PortfolioConfig,
     PortfolioTracking,
     PortfolioTrackingAsset,
 )
@@ -38,6 +39,7 @@ __all__ = [
     'PredictionTrainingEpoch',
     'Portfolio',
     'PortfolioAsset',
+    'PortfolioConfig',
     'PortfolioTracking',
     'PortfolioTrackingAsset',
 ]

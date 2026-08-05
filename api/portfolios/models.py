@@ -120,3 +120,46 @@ class PortfolioAsset(models.Model):
 
     def __str__(self):
         return f"{self.portfolio_id} - {self.asset.symbol} - qty={self.quantity}"
+
+
+class PortfolioConfig(models.Model):
+    """Configurações de uma carteira (1:1 com Portfolio).
+
+    Quando ``active_auto_optimization`` está ligado, a rotina de atualização
+    rebalanceia a carteira a cada ``update_frequency`` dias, segundo o modelo
+    de otimização escolhido. Para o modelo Gnosse, a previsão usada é a do
+    horizonte correspondente à frequência (freq=1 → dia 1; freq=5 → dia 5).
+    """
+    MARKOWITZ = 'markowitz'
+    GNOSSE = 'gnosse'
+    OPTIMIZATION_MODELS = [
+        (MARKOWITZ, 'Markowitz'),
+        (GNOSSE, 'Gnosse'),
+    ]
+
+    portfolio = models.OneToOneField(
+        Portfolio,
+        on_delete=models.CASCADE,
+        related_name='config',
+    )
+    active_auto_optimization = models.BooleanField(default=False)
+    optimization_model = models.CharField(
+        max_length=20,
+        choices=OPTIMIZATION_MODELS,
+        default=GNOSSE,
+    )
+    update_frequency = models.PositiveIntegerField(
+        default=5,
+        help_text='Intervalo (em dias) entre rebalanceamentos automáticos.',
+    )
+    # Controle interno da cadência: data do último rebalanceamento.
+    last_optimization_date = models.DateField(null=True, blank=True)
+
+    class Meta:
+        app_label = 'api'
+        db_table = 'portfolio_config'
+        verbose_name = 'Portfolio Config'
+        verbose_name_plural = 'Portfolio Configs'
+
+    def __str__(self):
+        return f"Config P{self.portfolio_id} - auto={self.active_auto_optimization} ({self.optimization_model})"

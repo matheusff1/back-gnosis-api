@@ -416,7 +416,7 @@ class OptmizersDataProcessor:
         }
 
     @staticmethod
-    def process_gnosse_data(df, predictions,optimizer='gnosse', behaviour='conservative'):
+    def process_gnosse_data(df, predictions, optimizer='gnosse', behaviour='conservative', horizon=None):
         df = df.copy()
         df['close'] = pd.to_numeric(df['close'], errors='coerce')
         predictions = predictions.copy()
@@ -435,7 +435,16 @@ class OptmizersDataProcessor:
             last_close = df_symbol.sort_values('date')['close'].dropna().iloc[-1]
             last_values.append(last_close)
 
-        predictions['prediction'] = predictions['prediction'].apply(lambda x: np.array(x)[-1])
+        def _pick_horizon(seq):
+            arr = np.array(seq)
+            if arr.size == 0:
+                return np.nan
+            if horizon is None:
+                return arr[-1]
+            idx = min(int(horizon), arr.size) - 1
+            return arr[max(idx, 0)]
+
+        predictions['prediction'] = predictions['prediction'].apply(_pick_horizon)
         predictions = predictions.sort_values(by='symbol')
         preds = predictions['prediction'].values
 

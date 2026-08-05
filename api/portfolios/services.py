@@ -4,7 +4,13 @@ from decimal import Decimal, InvalidOperation
 import pandas as pd
 
 from .constants import WEIGHT_PRECISION
-from .models import Portfolio, PortfolioAsset, PortfolioTracking, PortfolioTrackingAsset
+from .models import (
+    Portfolio,
+    PortfolioAsset,
+    PortfolioConfig,
+    PortfolioTracking,
+    PortfolioTrackingAsset,
+)
 from ..market.services import MarketDataService
 from ..quant.src.RiskMeasurements import PortfolioRisk
 from ..market.models import Asset
@@ -346,3 +352,58 @@ class PortfolioAnalyticsService:
                 'total_pnl_percent': round(total_pnl_percent, 2),
             },
         }
+
+
+class PortfolioConfigService:
+    """Leitura/escrita das configurações de auto-otimização da carteira."""
+
+    VALID_MODELS = {PortfolioConfig.MARKOWITZ, PortfolioConfig.GNOSSE}
+
+    @staticmethod
+    def get_or_create(portfolio):
+        config, _ = PortfolioConfig.objects.get_or_create(portfolio=portfolio)
+        return config
+
+    @staticmethod
+    def serialize(config):
+        return {
+            'portfolio_id': config.portfolio_id,
+            'active_auto_optimization': config.active_auto_optimization,
+            'optimization_model': config.optimization_model,
+            'update_frequency': config.update_frequency,
+            'last_optimization_date': (
+                config.last_optimization_date.isoformat()
+                if config.last_optimization_date else None
+            ),
+            'available_models': [m[0] for m in PortfolioConfig.OPTIMIZATION_MODELS],
+        }
+
+    @staticmethod
+    def update(portfolio, data):
+        """Atualiza a config a partir de ``data`` (dict). Valida os campos.
+        Levanta ``ValueError`` em entrada inválida."""
+        config, _ = PortfolioConfig.objects.get_or_create(portfolio=portfolio)
+
+        if 'active_auto_optimization' in data:
+            config.active_auto_optimization = bool(data['active_auto_optimization'])
+
+        if 'optimization_model' in data:
+            model = data['optimization_model']
+            if model not in PortfolioConfigService.VALID_MODELS:
+                raise ValueError(
+                    f"optimization_model inválido. Use um de: "
+                    f"{sorted(PortfolioConfigService.VALID_MODELS)}."
+                )
+            config.optimization_model = model
+
+        if 'update_frequency' in data:
+            try:
+                freq = int(data['update_frequency'])
+            except (TypeError, ValueError):
+                raise ValueError('update_frequency deve ser um inteiro.')
+            if freq < 1:
+                raise ValueError('update_frequency deve ser >= 1.')
+            config.update_frequency = freq
+
+        config.save()
+        return config

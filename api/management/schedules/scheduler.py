@@ -41,21 +41,24 @@ def run_update_portfolios_data():
 def start():
     scheduler = BackgroundScheduler(timezone=timezone('America/Sao_Paulo'))
 
+    # Ordem obrigatória: dados de mercado -> predições -> carteiras.
+    # As carteiras (que podem auto-otimizar com base nas predições) rodam por
+    # último, garantindo que as predições do dia já estejam salvas.
     scheduler.add_job(
-        run_update_market_data_command, 
-        trigger=CronTrigger(hour=22, minute=0),
+        run_update_market_data_command,
+        trigger=CronTrigger(hour=19, minute=0),
         misfire_grace_time=240
     )
 
     scheduler.add_job(
-        run_predictions_command, 
-        trigger=CronTrigger(hour=22, minute=30),
-        misfire_grace_time=120 
+        run_predictions_command,
+        trigger=CronTrigger(hour=19, minute=15),
+        misfire_grace_time=120
     )
 
     scheduler.add_job(
         run_update_portfolios_data,
-        trigger=CronTrigger(hour=22, minute=5),
+        trigger=CronTrigger(hour=21, minute=0),
         misfire_grace_time=120
     )
 

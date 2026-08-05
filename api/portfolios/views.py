@@ -9,7 +9,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from .models import Portfolio
-from .services import PortfolioService, PortfolioAnalyticsService
+from .services import PortfolioService, PortfolioAnalyticsService, PortfolioConfigService
 from .src.pnl_measurements import PortfolioPnlCalculator
 from ..market.models import MarketData
 from ..market.services import MarketDataService
@@ -373,3 +373,45 @@ def get_portfolio_accumulated_returns(request):
     except Exception as e:
         traceback.print_exc()
         return Response({'error': str(e)}, status=500)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_portfolio_config(request):
+    user = request.user
+    portfolio_id = request.GET.get('id')
+
+    if not portfolio_id:
+        return JsonResponse({'error': 'Portfolio ID not provided.'}, status=400)
+
+    portfolio = PortfolioService.get_owned(user, portfolio_id)
+    if not portfolio:
+        return JsonResponse({'error': 'Portfolio not found.'}, status=404)
+
+    config = PortfolioConfigService.get_or_create(portfolio)
+    return JsonResponse({'config': PortfolioConfigService.serialize(config)}, status=200)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def update_portfolio_config(request):
+    user = request.user
+    data = request.data
+    portfolio_id = data.get('id')
+
+    if not portfolio_id:
+        return JsonResponse({'error': 'Portfolio ID not provided.'}, status=400)
+
+    portfolio = PortfolioService.get_owned(user, portfolio_id)
+    if not portfolio:
+        return JsonResponse({'error': 'Portfolio not found.'}, status=404)
+
+    try:
+        config = PortfolioConfigService.update(portfolio, data)
+    except ValueError as e:
+        return JsonResponse({'error': str(e)}, status=400)
+    except Exception as e:
+        traceback.print_exc()
+        return JsonResponse({'error': str(e)}, status=500)
+
+    return JsonResponse({'config': PortfolioConfigService.serialize(config)}, status=200)

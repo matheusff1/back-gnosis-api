@@ -61,6 +61,36 @@ class ChatbotAnalysisService:
 class OptimizationService:
 
     @staticmethod
+    def _optimize_markowitz(data):
+        """Otimização Markowitz híbrida, viável para qualquer nº de ativos.
+
+        Tenta os perfis em ordem e retorna o primeiro que resolve:
+        1. ``aggressive`` (teto 35%/ativo) — diversificado, mas inviável para
+           carteiras muito pequenas (poucos ativos não somam 1 com teto 35%);
+        2. ``neutral`` (0–100%) — viável para qualquer N, respeitando ``min_return``;
+        3. ``neutral`` sem piso de retorno (min-variância) — último recurso,
+           sempre viável, quando nem o retorno mínimo é alcançável.
+        """
+        attempts = [
+            ('aggressive', data['min_return']),
+            ('neutral', data['min_return']),
+            ('neutral', None),
+        ]
+        last_error = None
+        for behaviour, min_return in attempts:
+            try:
+                optimizer = PortfolioOptimizer(
+                    items=data['items'], items_val=data['items_val'],
+                    items_returns=data['items_returns'], items_pred=data['items_pred'],
+                    items_vol=data['items_vol'], min_return=min_return,
+                    optimizer=data['optimizer'], behaviour=behaviour,
+                )
+                return optimizer.optimize()
+            except Exception as e:
+                last_error = e
+        raise last_error if last_error else RuntimeError('Otimização Markowitz falhou.')
+
+    @staticmethod
     def optimize_for_symbols(symbols, min_return=DEFAULT_MIN_RETURN):
         symbols_data = MarketData.objects.filter(asset__symbol__in=symbols).order_by('date')
         symbols_data = pd.DataFrame(list(
@@ -69,7 +99,7 @@ class OptimizationService:
         ))
 
         data_mk = OptmizersDataProcessor.process_markowitz_data(
-            symbols_data, behaviour='balanced', min_return=min_return
+            symbols_data, behaviour='aggressive', min_return=min_return
         )
 
         predictions_data = PredictionService.latest_predictions_dataframe(symbols)
@@ -80,13 +110,7 @@ class OptimizationService:
 
         ret = {}
         try:
-            optimization_mk = PortfolioOptimizer(
-                items=data_mk['items'], items_val=data_mk['items_val'],
-                items_returns=data_mk['items_returns'], items_pred=data_mk['items_pred'],
-                items_vol=data_mk['items_vol'], min_return=data_mk['min_return'],
-                optimizer=data_mk['optimizer']
-            )
-            ret['markowitz'] = optimization_mk.optimize()
+            ret['markowitz'] = OptimizationService._optimize_markowitz(data_mk)
         except Exception as e:
             traceback.print_exc()
             ret['markowitz'] = {'error': str(e)}
@@ -118,24 +142,63 @@ class OptimizationService:
         ]
 
         processed_data = OptmizersDataProcessor.process_markowitz_data(
-            data, behaviour='neutral', min_return=DEFAULT_MIN_RETURN
+            data, behaviour='aggressive', min_return=DEFAULT_MIN_RETURN
         )
 
-        optimizer = PortfolioOptimizer(
-            items=processed_data['items'], items_val=processed_data['items_val'],
-            items_returns=processed_data['items_returns'],
-            items_pred=processed_data['items_pred'],
-            items_vol=processed_data['items_vol'], min_return=processed_data['min_return'],
-            optimizer=processed_data['optimizer'], behaviour=processed_data['behaviour']
-        )
-
-        results = optimizer.optimize()
+        results = OptimizationService._optimize_markowitz(processed_data)
         to_json_results = json.loads(json.dumps(results, default=str))
         return {
             'symbols': to_json_results['items'],
             'distribuition': to_json_results['optimized_weights'],
             'complete_result': to_json_results,
         }
+
+    @staticmethod
+    def target_weights(symbols, model, horizon=None, min_return=DEFAULT_MIN_RETURN):
+        """Pesos-alvo dos símbolos usando um único modelo ('markowitz'|'gnosse').
+
+        Retorna ``{symbol: weight}`` ou ``None`` se não houver dados ou a
+        otimização falhar. Para 'gnosse', ``horizon`` seleciona o valor previsto
+        (dia N) — casado com a frequência de rebalanceamento da carteira.
+        """
+        symbols = list(symbols)
+        if not symbols:
+            return None
+
+        market_df = pd.DataFrame(list(
+            MarketData.objects.filter(asset__symbol__in=symbols).order_by('date')
+            .values('date', 'close', 'high', 'low', 'open', 'volume', symbol=F('asset__symbol'))
+        ))
+        if market_df.empty:
+            return None
+
+        try:
+            if model == 'markowitz':
+                data = OptmizersDataProcessor.process_markowitz_data(
+                    market_df, behaviour='aggressive', min_return=min_return
+                )
+                result = OptimizationService._optimize_markowitz(data)
+            elif model == 'gnosse':
+                predictions_df = PredictionService.latest_predictions_dataframe(symbols)
+                if predictions_df.empty:
+                    return None
+                data = OptmizersDataProcessor.process_gnosse_data(
+                    market_df, predictions_df, behaviour='aggressive', horizon=horizon
+                )
+                optimizer = PortfolioOptimizer(
+                    items=data['items'], items_val=data['items_val'],
+                    items_returns=data['items_returns'], items_pred=data['items_pred'],
+                    items_vol=data['items_vol'], min_return=data['min_return'],
+                    optimizer=data['optimizer'],
+                )
+                result = optimizer.optimize()
+            else:
+                return None
+        except Exception:
+            traceback.print_exc()
+            return None
+
+        return dict(zip(result['items'], result['optimized_weights']))
 
 
 class PredictionService:
